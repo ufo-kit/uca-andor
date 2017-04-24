@@ -16,15 +16,13 @@
  * Franklin St, Fifth Floor, Boston, MA 02110, USA 
  */
 
-#include <glib-object.h>
+#include <uca/uca-camera.h>
 #include <gio/gio.h>
-#include <gmodule.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 #include "atcore.h"
-#include "uca-camera.h"
 #include "uca-andor-camera.h"
 
 #define UCA_ANDOR_CAMERA_GET_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE((obj), UCA_TYPE_ANDOR_CAMERA, UcaAndorCameraPrivate))
@@ -81,7 +79,6 @@ static gint andor_overrideables [] = {
     PROP_SENSOR_HEIGHT,
     PROP_SENSOR_PIXEL_WIDTH,
     PROP_SENSOR_PIXEL_HEIGHT,
-    PROP_TRIGGER_MODE,
     PROP_IS_RECORDING,
     PROP_SENSOR_BITDEPTH,
     PROP_HAS_CAMRAM_RECORDING,
@@ -384,13 +381,14 @@ uca_andor_camera_set_property (GObject *object, guint property_id, const GValue 
                 priv->pixel_height = val_double;
             break;
         case PROP_SENSOR_BITDEPTH:
-            //placeholder
             break;
+#if 0
         case PROP_TRIGGER_MODE:
             val_enum = g_value_get_enum (value);
             if (write_enum_index (priv, L"TriggerMode", val_enum))
                 priv->trigger_mode = val_enum;
             break;
+#endif
         case PROP_FRAMERATE:
             val_double = g_value_get_double (value);
             if (write_double (priv, L"FrameRate", val_double))
@@ -471,10 +469,12 @@ uca_andor_camera_get_property (GObject *object, guint property_id, GValue *value
         case PROP_SENSOR_BITDEPTH:
             g_value_set_uint (value, 16);
             break;
+#if 0
         case PROP_TRIGGER_MODE:
             if (read_enum_index (priv, L"TriggerMode", &val_enum))
                 g_value_set_enum (value, val_enum);
             break;
+#endif
         case PROP_ROI_STRIDE:
             if (read_integer (priv, L"AOIStride", &val_uint))
                 g_value_set_uint (value, val_uint);
