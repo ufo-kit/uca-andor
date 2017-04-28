@@ -748,7 +748,7 @@ uca_andor_camera_init (UcaAndorCamera *self)
 }
 
 G_MODULE_EXPORT GType
-uca_camera_get_type (void)
+camera_plugin_get_type (void)
 {
     return UCA_TYPE_ANDOR_CAMERA;
 }
