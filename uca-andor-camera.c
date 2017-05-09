@@ -1,11 +1,11 @@
-/* 
+/*
  * Copyright (C) 2014-2017 Karlsruhe Institute of Technology
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by the
  * Free Software Foundation; either version 2.1 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
  * FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more
@@ -13,7 +13,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License along
  * with this library; if not, write to the Free Software Foundation, Inc., 51
- * Franklin St, Fifth Floor, Boston, MA 02110, USA 
+ * Franklin St, Fifth Floor, Boston, MA 02110, USA
  */
 
 #include <uca/uca-camera.h>
@@ -64,8 +64,6 @@ struct _UcaAndorCameraPrivate {
     AT_U8* image_buffer;
     AT_U8* aligned_buffer;
     AT_64 image_size;               /* image memory size in bytes */
-
-    int rand;
 };
 
 static gint andor_overrideables [] = {
@@ -263,7 +261,6 @@ uca_andor_camera_start_recording (UcaCamera *camera, GError **error)
     g_return_if_fail (UCA_IS_ANDOR_CAMERA(camera));
 
     priv = UCA_ANDOR_CAMERA_GET_PRIVATE (camera);
-    priv->rand = 0;
 
     AT_GetInt (priv->handle, L"ImageSizeBytes", &priv->image_size);
 
@@ -272,6 +269,8 @@ uca_andor_camera_start_recording (UcaCamera *camera, GError **error)
 
     priv->image_buffer = g_malloc0 ((NUM_BUFFERS * priv->image_size + 8) * sizeof (gchar));
     priv->aligned_buffer = (AT_U8*) (((unsigned long) priv->image_buffer + 7) & ~0x7);
+
+    AT_Flush (priv->handle);
 
     for (int i = 0; i < NUM_BUFFERS; i++)
         AT_QueueBuffer (priv->handle, priv->aligned_buffer + i * priv->image_size, priv->image_size);
@@ -319,8 +318,19 @@ uca_andor_camera_grab (UcaCamera *camera, gpointer data, GError **error)
     if (!check_error (error_number, "Could not grab frame", error))
         return FALSE;
 
-    g_memmove (data, buffer, priv->image_size);
-    AT_QueueBuffer (priv->handle, buffer, priv->image_size);
+    if (priv->aoi_width * 2 == priv->aoi_stride) {
+        g_memmove (data, buffer, priv->aoi_width * priv->aoi_height * 2);
+    }
+    else {
+        gsize offset = 0;
+
+        for (guint i = 0; i < priv->aoi_height; i++) {
+            g_memmove (((guint16 *) data) + i * priv->aoi_width, buffer + offset, priv->aoi_width * 2);
+            offset += priv->aoi_stride;
+        }
+    }
+
+    AT_QueueBuffer (priv->handle, buffer, size);
 
     return TRUE;
 }
