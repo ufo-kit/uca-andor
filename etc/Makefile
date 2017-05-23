@@ -22,7 +22,7 @@ install:
 	install -t $(DESTDIR)$(PREFIX)/$(LIBDIR) bitflow/64b/lib/$(BITFLOW_LIB)
 	for lib in $(ANDOR_LIBS); do \
 		install -t $(DESTDIR)$(PREFIX)/$(LIBDIR) x86_64/"$$lib".$(ANDOR_VERSION) ; \
-		ln -s $(DESTDIR)$(PREFIX)/$(LIBDIR)/"$$lib".$(VERSION) $(DESTDIR)$(PREFIX)/$(LIBDIR)/"$$lib" ; \
+		ln -s $(DESTDIR)$(PREFIX)/$(LIBDIR)/"$$lib".$(ANDOR_VERSION) $(DESTDIR)$(PREFIX)/$(LIBDIR)/"$$lib" ; \
 	done
 	for header in $(ANDOR_HEADERS); do \
 		install -t $(DESTDIR)$(PREFIX)/$(INCLUDEDIR) inc/"$$header" ; \
