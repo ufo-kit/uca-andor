@@ -55,6 +55,13 @@ G_DEFINE_TYPE_WITH_CODE (UcaAndorCamera, uca_andor_camera, UCA_TYPE_CAMERA,
 #define NUM_BUFFERS             10
 #define WAIT_BUFFER_TIMEOUT	10000 		/* Time allowed for the camera to return buffer before raising error; original = 10000 (10s) */
 
+/* Available values for check_access function's parameters */
+#define CHECK_ACCESS_WRITE	0		
+#define CHECK_ACCESS_READ	1		
+#define CHECK_ACCESS_WARN	TRUE		
+#define CHECK_ACCESS_SILENT	FALSE		
+
+
 /**
  * UcaAndorCameraError
  * @ANDOR_NOERROR:				
@@ -74,8 +81,8 @@ struct _UcaAndorCameraPrivate {
     AT_H handle;
     GError *construct_error;
 
-    gchar* name;
-    gchar* model;
+    gchar*  name;
+    gchar*  model;
     guint64 aoi_left;
     guint64 aoi_top;
     guint64 aoi_width;
@@ -95,9 +102,11 @@ struct _UcaAndorCameraPrivate {
     gboolean is_sim_cam;
     gboolean is_cam_acquiring;
 
-    AT_U8* image_buffer;
-    AT_U8* aligned_buffer;
-    AT_64 image_size;               /* image memory size in bytes */
+    AT_WC*  pixel_encoding_wchar; 	/* pixel encoding under AT_WC* format needed to pass it into AT_ConvertBuffer */
+    AT_U8*  image_buffer;
+    AT_U8*  aligned_buffer;
+    AT_64   image_size;               	/* full image (frame + padding + metadata if enabled) memory size in bytes */
+
 };
 
 static gint andor_overrideables [] = {
@@ -130,42 +139,273 @@ enum {
 
 /////////////////////////////////////////////////////////////////////////////
 
-GQuark
-uca_andor_camera_error_quark (void)
+/* 	##############################
+ * 	# INTERNAL UTILITY FUNCTIONS #
+ * 	##############################
+ */
+
+static gchar*
+identify_andor_error (int error)
+/**
+ * Return a string containing the error corresponding to the error number returned from andor camera
+ * The following 'switch' matches the defined AT errors in the SDK's file 'atcore.h' and in the documentation
+ */
 {
-    return g_quark_from_static_string ("uca-andor-camera-error-quark");
+	gchar* string;
+	switch (error) {
+		/* atcore.h errors */
+		case 0:
+			string = "No error ... (identify_andor_error function has been called for a bad reason, please fix)";
+			break;
+		case 1:
+			string = "Camera Handle uninitialized";
+			break;
+		case 2:
+			string = "Feature is not implemented for this camera";
+			break;
+		case 3:
+			string = "Feature is read only";
+			break;
+		case 4:
+			string = "Feature is currently not readable";
+			break;
+		case 5:
+			string = "Feature is currently not writable / Command is not currently executable";
+			break;
+		case 6:
+			string = "Value is either out of range or unavailable";
+			break;
+		case 7:
+			string = "Index is currently not available";
+			break;
+		case 8:
+			string = "Index is not implemented on this camera";
+			break;
+		case 9:
+			string = "String value exceed maximum allowed length";
+			break;
+		case 10:
+			string = "Connection or Disconnection error";
+			break;
+		case 11:
+			string = "No Internal Event or Internal Error";
+			break;
+		case 12:
+			string = "Invalid handle";
+			break;
+		case 13:
+			string = "Waiting for buffer timed out";
+			break;
+		case 14:
+			string = "Input buffer queue reached maximum capacity";
+			break;
+		case 15:
+			string = "Queued buffer / returned frame size conflict";
+			break;
+		case 16:
+			string = "A queued buffer was not aligned on an 8-byte boundary";
+			break;
+		case 17:
+			string = "An error has occurred while communicating with hardware";
+			break;
+		case 18:
+			string = "Index / String is not currently available";
+			break;
+		case 19:
+			string = "Index / String is not implemented on this camera";
+			break;
+		case 20:
+			string = "Passed feature = NULL";
+			break;
+		case 21:
+			string = "Passed handle = NULL";
+			break;
+		case 22:
+			string = "Feature not implemented";
+			break;
+		case 23:
+			string = "Readable not set";
+			break;
+		case 24:
+			string = "Readonly not set"; 	
+			break;
+		case 25:
+			string = "Writable not set";
+			break;
+		case 26:
+			string = "Min value = NULL";
+			break;
+		case 27:
+			string = "Max value = NULL";
+			break;
+		case 28:
+			string = "Function returned NULL value";
+			break;
+		case 29:
+			string = "Function returned NULL string";
+			break;
+		case 30:
+			string = "Feature index count = NULL";
+			break;
+		case 31:
+			string = "Available not set";
+			break;
+		case 32:
+			string = "Passed string lenght = NULL";
+			break;
+		case 33:
+			string = "EvCallBack parameter = NULL";
+			break;
+		case 34:
+			string = "Pointer to queue = NULL";
+			break;
+		case 35:
+			string = "Wait pointer = NULL";
+			break;
+		case 36:
+			string = "Pointer size = NULL";
+			break;
+		case 37:
+			string = "No memory allocated for current action";
+			break;
+		case 38:
+			string = "Unable to connect, device already in use";
+			break;
+		case 39:
+			string = "Device not found";
+			break;
+		case 100:
+			string = "The software was not able to retrieve data from the card or camera fast enough to avoid the internal hardware buffer bursting";
+			break;
+		/* atutility.h errors */
+		case 1002:
+			string = "Invalid output pixel encoding";
+			break;
+		case 1003:
+			string = "Invalid input pixel encoding";
+			break;
+		case 1004:
+			string = "Input buffer does not include metadata";
+			break;
+		case 1005:
+			string = "Corrupted metadata";
+			break;
+		case 1006:
+			string = "Metadata not found";
+			break;
+		default :
+			string = "Unknown error...";
+			break;
+	} 
+	return string;
 }
 
-gboolean
-check_error (int error_number, const char* message, GError **error)
+static gboolean		
+check_access (UcaAndorCameraPrivate *priv, const AT_WC* feature, int access, gboolean warn)
+/**
+ * Check access of the feature passed in parameters :
+ *	- check if implemented
+ *	- if access = CHECK_ACCESS_READ		check if readable
+ *	- if access = CHECK_ACCESS_WRITE 	check if read_only then if writable
+ * Return TRUE if access is OK, return FALSE if not
+ * 	- if warn = CHECK_ACCESS_WARN		will display warning if access is not allowed/available or if an error occur
+ *	- if warn = CHECK_ACCESS_SILENT		will display warning only if an error occur
+ * Does not display error when read access fail if camera = SIMCAM (to not overload output... but errors are still displayed if its for writting)
+ */
 {
-    if (error_number != AT_SUCCESS) {
-        g_set_error (error, UCA_ANDOR_CAMERA_ERROR, UCA_ANDOR_CAMERA_ERROR_LIBANDOR_GENERAL,
-                     "Andor communication error `%s' (%i)", message, error_number);
-        return FALSE;
+	int errnum;
+	AT_BOOL testbool;
+	errnum = AT_IsImplemented (priv->handle, feature, &testbool);
+	if (!errnum && testbool){
+		if (access == CHECK_ACCESS_READ) {
+			errnum = AT_IsReadable (priv->handle, feature, &testbool);
+			if (!errnum && !testbool) {
+				if (warn) g_warning ("READ ACCESS ERROR: feature '%S' is currently not readable", feature);
+				return FALSE;
+			}
+			else if (errnum) {
+				g_warning ("Check access failed for '%S': AT_IsReadable returned error: %s (%d)",feature, identify_andor_error(errnum), errnum);
+				return FALSE;
+			}
+		}
+		else if (access == CHECK_ACCESS_WRITE) {
+			errnum = AT_IsReadOnly (priv->handle, feature, &testbool);
+			if (!errnum && testbool) {
+				if (warn) g_warning ("WRITE ACCESS ERROR: feature '%S' is read only", feature);
+				return FALSE;
+			}
+			else if (errnum) {
+				g_warning ("Check access failed for '%S': AT_IsReadOnly returned error: %s (%d)",feature,identify_andor_error(errnum), errnum);
+				return FALSE;
+			}
+			errnum = AT_IsWritable (priv->handle, feature, &testbool);
+			if (!errnum && !testbool) {
+				if (warn) g_warning ("WRITE ACCESS ERROR: feature '%S' is currently not writable", feature);
+				return FALSE;
+			}
+			else if (errnum) {
+				g_warning ("Check access failed for '%S': AT_IsWritable returned error: %s (%d)",feature,identify_andor_error(errnum), errnum);
+				return FALSE;
+			}			
+		}
+		else {
+			g_warning("Could not check access '%d' for feature '%S', access not recognised", access, feature);
+		}
+		return TRUE;
+	}
+	else if (!errnum && !testbool){
+		if (warn && !(priv->is_sim_cam && access==CHECK_ACCESS_READ) ) /* Disable 'not implemented' display if camera is SIMCAM and checking READ access */
+			g_warning ("ACCESS ERROR: feature '%S' is not implemeted on camera '%s'", feature, priv->name);
+		return FALSE;
+	}
+	else {
+		g_warning ("Check access failed for '%S': AT_IsImplemented returned error: %s (%d)",feature,identify_andor_error(errnum), errnum);
+		return FALSE;
+	}
+return FALSE; 		/* by default .. should not be encountered */
+}
+
+static gboolean
+write_integer (UcaAndorCameraPrivate *priv, const AT_WC* property, guint64 value)
+{
+    int error;
+    AT_64 max=0, min=0;
+
+    if (!check_access (priv, property, CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN)) return FALSE;		
+
+    error = AT_GetIntMax (priv->handle, property, &max);	
+    if (error) {							
+	g_warning ("Could not read maximum allowable '%S'value: %s (%d)", property, identify_andor_error(error), error);
+	return FALSE;
     }
 
+    error = AT_GetIntMin (priv->handle, property, &min);	
+    if (error) {							
+	g_warning ("Could not read minimum allowable '%S' value: %s (%d)", property, identify_andor_error(error), error);
+	return FALSE;
+    }
+
+    if ((value < min) || (value > max)) {			
+	g_warning ("Value %d is out of range for feature %S: current range is [%d ; %d]", (int) value, property, (int) min, (int) max);
+	return FALSE;
+    }
+
+    error = AT_SetInt (priv->handle, property, value);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not write integer '%S': %s (%d)", property, identify_andor_error(error), error);
+        return FALSE;
+    }
     return TRUE;
 }
 
 static gboolean
-write_integer (UcaAndorCameraPrivate *priv, const AT_WC* property, gint64 value)
+read_integer (UcaAndorCameraPrivate *priv, const AT_WC* property, guint64 *value)
 {
-    if (AT_SetInt (priv->handle, property, value) != AT_SUCCESS) {
-        g_warning ("Could not write `%s'", (const gchar *) property);
-        return FALSE;
-    }
-
-    return TRUE;
-}
-
-static gboolean
-read_integer (UcaAndorCameraPrivate *priv, const AT_WC* property, gint64 *value)
-{
-    gint64 temp;
-
-    if (AT_GetInt (priv->handle, property, (AT_64 *) &temp) != AT_SUCCESS) {
-        g_warning ("Could not read `%s'", (const gchar *) property);
+    guint64 temp;
+    if (!check_access (priv, property, CHECK_ACCESS_READ, CHECK_ACCESS_WARN)) return FALSE;		
+    int error = AT_GetInt (priv->handle, property, (AT_64 *) &temp);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not read integer '%S': %s (%d)", property, identify_andor_error(error), error);
         return FALSE;
     }
     *value = temp;
@@ -175,11 +415,33 @@ read_integer (UcaAndorCameraPrivate *priv, const AT_WC* property, gint64 *value)
 static gboolean
 write_double (UcaAndorCameraPrivate *priv, const AT_WC* property, double value)
 {
-    if (AT_SetFloat (priv->handle, property, value) != AT_SUCCESS) {
-        g_warning ("Could not write `%s'", (const gchar *) property);
-        return FALSE;
+    int error;
+    double max=0, min=0;
+
+    if (!check_access (priv, property, CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN)) return FALSE;		
+
+    error = AT_GetFloatMax (priv->handle, property, &max);
+    if (error) {						
+	g_warning ("Could not read maximum allowable '%S'value: %s (%d)", property, identify_andor_error(error), error);
+	return FALSE;
     }
 
+    error = AT_GetFloatMin (priv->handle, property, &min);	
+    if (error) {							
+	g_warning ("Could not read minimum allowable '%S' value: %s (%d)", property, identify_andor_error(error), error);
+	return FALSE;
+    }
+
+    if ((value < min) || (value > max)) {			
+	g_warning ("Value %f is out of range for feature %S: current range is [%f ; %f]", (float) value, property, (float) min, (float) max);
+	return FALSE;
+    }
+
+    error = AT_SetFloat (priv->handle, property, value);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not write double '%S': %s (%d)", property, identify_andor_error(error), error);
+        return FALSE;
+    }
     return TRUE;
 }
 
@@ -187,22 +449,53 @@ static gboolean
 read_double (UcaAndorCameraPrivate *priv, const AT_WC* property, double *value)
 {
     double temp;
-
-    if (AT_GetFloat (priv->handle, property, &temp) != AT_SUCCESS) {
-        g_warning ("Could not read `%s'", (const gchar *) property);
+    if (!check_access (priv, property, CHECK_ACCESS_READ, CHECK_ACCESS_WARN)) return FALSE;		
+    int error = AT_GetFloat (priv->handle, property, &temp);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not read double '%S': %s (%d)", property, identify_andor_error(error), error);
         return FALSE;
     }
     *value = temp;
     return TRUE;
 }
 
+static gboolean		
+read_double_max (UcaAndorCameraPrivate *priv, const AT_WC* property, double *value) 
+{
+	double temp;
+    if (!check_access (priv, property, CHECK_ACCESS_READ, CHECK_ACCESS_WARN)) return FALSE;	
+	int error = AT_GetFloatMax (priv->handle, property, &temp);
+    	if (error != AT_SUCCESS) {
+        	g_warning ("Could not read double max of '%S': %s (%d)", property, identify_andor_error(error), error);
+        	return FALSE;
+    	}
+	*value = temp;
+	return TRUE;
+}
+
+static gboolean		
+read_double_min (UcaAndorCameraPrivate *priv, const AT_WC* property, double *value) 
+{
+	double temp;
+    if (!check_access (priv, property, CHECK_ACCESS_READ, CHECK_ACCESS_WARN)) return FALSE;	
+	int error = AT_GetFloatMin (priv->handle, property, &temp);
+    	if (error != AT_SUCCESS) {
+        	g_warning ("Could not read double min of '%S': %s (%d)", property, identify_andor_error(error), error);
+        	return FALSE;
+    	}
+	*value = temp;
+	return TRUE;
+}
+
 static gboolean
 write_enum_index (UcaAndorCameraPrivate *priv, const AT_WC* property, int value)
 {
     int count;
+    if (!check_access (priv, property, CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN)) return FALSE;		
 
-    if (AT_GetEnumCount (priv->handle, property, &count) != AT_SUCCESS) {
-        g_warning ("Cannot read enum count `%s'", (const gchar *) property);
+    int error = AT_GetEnumCount (priv->handle, property, &count);
+    if (error != AT_SUCCESS) {
+        g_warning ("Cannot read enum count '%S': %s (%d)", property, identify_andor_error(error), error);
         return FALSE;
     }
 
@@ -211,8 +504,9 @@ write_enum_index (UcaAndorCameraPrivate *priv, const AT_WC* property, int value)
         return FALSE;
     }
 
-    if (AT_SetEnumIndex (priv->handle, property, value) != AT_SUCCESS) {
-        g_warning ("Could not set enum `%s'", (const gchar *) property);
+    error = AT_SetEnumIndex (priv->handle, property, value);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not set enum '%S': %s (%d)", property, identify_andor_error(error), error);
         return FALSE;
     }
     return TRUE;
@@ -222,9 +516,11 @@ static gboolean
 read_enum_index (UcaAndorCameraPrivate *priv, const AT_WC* property, int *value)
 {
     int temp;
+    if (!check_access (priv, property, CHECK_ACCESS_READ, CHECK_ACCESS_WARN)) return FALSE;		
 
-    if (AT_GetEnumIndex (priv->handle, property, &temp) != AT_SUCCESS) {
-        g_warning ("Could not read `%s'", (const gchar *) property);
+    int error = AT_GetEnumIndex (priv->handle, property, &temp);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not read index '%S': %s (%d)", property, identify_andor_error(error), error);
         return FALSE;
     }
     *value = temp;
@@ -237,14 +533,17 @@ write_string (UcaAndorCameraPrivate *priv, const AT_WC *property, const gchar *v
     AT_WC* wide_value;
     size_t len;
     gboolean result;
+ 
+    if (!check_access (priv, property, CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN)) return FALSE;		
 
     result = TRUE;
     len = strlen (value);
     wide_value = g_malloc0 ((len + 1) * sizeof (AT_WC));
     mbstowcs (wide_value, value, len);
 
-    if (AT_SetEnumString (priv->handle, property, wide_value) != AT_SUCCESS) {
-        g_warning ("Could not write `%s' to `%s'", value, (const gchar *) property);
+    int error = AT_SetEnumString (priv->handle, property, wide_value);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not write string '%s' to '%S': %s (%d)", value, property, identify_andor_error(error), error);
         result = FALSE;
     }
 
@@ -256,30 +555,231 @@ static gboolean
 read_string (UcaAndorCameraPrivate *priv, const AT_WC *property, gchar **value)
 {
     AT_WC* wide_value;
-    int index;
-    gboolean result;
+    int index, error;
+    gboolean result = TRUE;
 
-    result = TRUE;
+    if (!check_access (priv, property, CHECK_ACCESS_READ, CHECK_ACCESS_WARN)) return FALSE;		
 
-    if (AT_GetEnumIndex (priv->handle, property, &index) != AT_SUCCESS) {
-        g_warning ("Could not get index for `%s'", (const gchar *) property);
+    error = AT_GetEnumIndex (priv->handle, property, &index);
+    if (error != AT_SUCCESS) {
+	g_warning ("Could not read index for '%S': %s (%d)", property, identify_andor_error(error), error);
         return FALSE;
     }
 
     wide_value = g_malloc0 (1023 * sizeof (AT_WC));
 
-    if (AT_GetEnumStringByIndex (priv->handle, property, index, wide_value, 1023) != AT_SUCCESS) {
-        g_warning ("Could not read string for `%s'", (const gchar *) property);
+    error = AT_GetEnumStringByIndex (priv->handle, property, index, wide_value, 1023);
+    if (error != AT_SUCCESS) {
+	g_warning ("Could not read string '%S': %s (%d)", property, identify_andor_error(error), error);
+	g_free (wide_value); 
         result = FALSE;
-        goto free_read_string_resources;
     }
 
     *value = g_malloc0 ((wcslen (wide_value) + 1) * sizeof (gchar));
     wcstombs (*value, wide_value, wcslen (wide_value));
 
-free_read_string_resources:
     g_free (wide_value);
     return result;
+}
+
+static gboolean												
+read_boolean (UcaAndorCameraPrivate *priv, const AT_WC *property, gboolean *value)	
+{
+	gboolean temp;
+    if (!check_access (priv, property, CHECK_ACCESS_READ, CHECK_ACCESS_WARN)) return FALSE;			
+
+	int error = AT_GetBool (priv->handle, property, (AT_BOOL *) &temp);
+	if (error != AT_SUCCESS) {
+		g_warning ("Could not read boolean '%S': %s (%d)", property, identify_andor_error(error), error);
+		return FALSE;
+	}
+	*value = temp;
+	return TRUE;
+}
+
+static gboolean										
+write_boolean (UcaAndorCameraPrivate *priv, const AT_WC* property, gboolean value)	
+{
+    if (!check_access (priv, property, CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN)) return FALSE;		
+
+    int error = AT_SetBool (priv->handle, property, value);
+    if (error != AT_SUCCESS) {
+        g_warning ("Could not write boolean '%S': %s (%d)", property, identify_andor_error(error), error);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+
+static gint64
+extract_uint_from_string (gchar* string)			
+/**
+ * Function used for extracting bitdeph value (uint) from andor's returned string
+ *	-> assume that the string contain an unique number of 1 or 2 numeral(s) (nothing else!)
+ */
+{
+	gint64 num;
+	gchar extract[2];
+	long unsigned int i=0;
+	while (i < (strlen(string))) {
+		if (string[i]=='0' || string[i]=='1' || string[i]=='2' || string[i]=='3' || string[i]=='4' || string[i]=='5' || string[i]=='6' ||  
+		    string[i]=='7' || string[i]=='8' || string[i]=='9') { 		/* buldozzer method to check if character is a numeral... */
+
+			if (string[i+1]=='0' || string[i+1]=='1' || string[i+1]=='2' || string[i+1]=='3' || string[i+1]=='4' || string[i+1]=='5' || string[i+1]=='6' ||  
+		    	    string[i+1]=='7' || string[i+1]=='8' || string[i+1]=='9') {
+				extract[0]=string[i];
+				extract[1]=string[i+1];
+			}
+			else {
+				extract[1]='\0';
+				extract[0]=string[i];
+			}
+
+			num = atoi (extract);
+			return num;
+		}
+		i++;
+	}
+	g_warning("Could not extract BitDepth uint from returned string '%s', returned value: 0 by default",string);
+	return 0;
+}
+
+static void
+calculate_frame_number (UcaAndorCameraPrivate *priv, AT_64 timestamp)
+/**
+ * Calculate and return the frame number since beginning of acquisition according to user's parameters :
+ *	- if trigger source = AUTO: measure delta time between each frame and according to framerate, calculate the new frame number
+ *				    can be used to ensure that no frame has been missed during recording
+ * 	WARNING: this is an approximation, if delta time does not perfectly match the framerate, the number set is a truncation of what has been calculated
+ *
+ *	- if trigger source = SOFTWARE or EXTERNAL: frame_number is incremented each time grab function is used... but there is no warranty that no frame has been missed
+ *	 					    because the plugin does not have access to the framerate used for the experiment
+ * NOTE: this function does not check if metadata is enabled, it should not be called if this is not the case
+ */
+{
+	switch (priv->trigger_mode) {
+		case UCA_CAMERA_TRIGGER_SOURCE_AUTO:
+			if (priv->last_frame_number == 0) {
+				priv->last_frame_number = 1;	
+				priv->last_frame_clock = timestamp;
+				priv->frame_number = 1;
+			}
+			else {
+				double temp_float = ((double)(timestamp - priv->last_frame_clock)/(double)priv->timestamp_clock_frequency) 
+						     * priv->frame_rate / priv->accumulate_count;
+				priv->frame_number = priv->last_frame_number + (gint) temp_float;
+				priv->last_frame_number = priv->frame_number;
+				priv->last_frame_clock = timestamp;
+			}
+			return;
+		default:
+			priv->frame_number++;
+			return;
+	}
+
+}
+
+static void
+add_time_to_frame (AT_64 timestamp, AT_U8 *data, int frame_number)
+/**
+ * Overwrite the first 28 Bytes of the picture (14 pixels at 2 Bytes/pixel) with frame number and timestamp raw value :
+ *	- pixels 0 to 3 (4 pixels): frame number coded in BCD-packed: each pixel contains 2 digit (going from highest power to lowest) on the last 8 bits eg :
+ *	 _______________	 _______________
+ *	|  (0)	|  (0)	|	| digi0	| digi1	|		
+ *	     1 Byte		     1 Byte		[...]		(if number = 1042, digi[] = [1,0,4,2])
+ * 	|----------------1 pixel----------------|
+ *
+ *	- pixels 4 to 13 (10 pixels): timestamp in binary (64 bits) converted into BCD-packed (20 digits) following the same process.
+ * 	- WARNING: this function assumes that the frame_number has maximum 8 digits
+ * NOTE: this function does not check if metadata is enabled, it should not be called if this is not the case
+ */
+{
+	unsigned short temp1, temp2;	
+	AT_64 pow=1e7, offset=0;	
+
+/* Write frame_number on pixels no:0-3 (bytes no:0-7) */
+
+	for (int i=0; i<4; i++) {				/* Naviguate through 4 first pixels */
+		temp1 = ((frame_number-offset) - ((frame_number-offset) % pow)) / pow;			/* retrieve 1st digit */
+		pow /= 10;
+		temp2 = ((frame_number-offset) - ((frame_number-offset) % pow)) / pow - (temp1*10);	/* retrieve 2nd digit */	
+		offset += ((temp1*10) + temp2) * pow;							/* suppress digits that have been grabbed from number */
+		pow /= 10;
+		*data = (unsigned short) (temp1*16 + temp2);	/* write digits into pixel (pixel size = unsigned short size = 2 bytes) */
+		data += 2;					/* Move through the memory */
+	}
+
+/* Write timestamp on pixels no:4-13 (bytes no:8-27) */
+
+	pow = 1e17;
+	offset = 0;
+	
+	/* We "cheat" for the first itteration (first pixel) because we cannot set pow = 2e19 (overflow of AT_64 format (unsigned long)) (FIXME: can we?)*/
+	temp1 = ((timestamp-offset) - ((timestamp-offset) % (int)1e19)) / 1e19;	
+	temp2 = ((timestamp-offset) - ((timestamp-offset) % (int)1e18)) / 1e18 - (temp1*10);	
+	offset += ((temp1*10) + temp2) * pow;						
+	*data = (unsigned short) (temp1*16 + temp2);
+	data += 2;
+
+	for (int i=0; i<9; i++) {						
+		temp1 = ((timestamp-offset) - ((timestamp-offset) % pow)) / pow;	
+		pow /= 10;
+		temp2 = ((timestamp-offset) - ((timestamp-offset) % pow)) / pow - (temp1*10);	
+		offset += ((temp1*10) + temp2) * pow;						
+		pow /= 10;
+		*data = (unsigned short) (temp1*16 + temp2);
+		data += 2;				
+	}
+
+}
+
+static int
+convert_and_concatenate_buffer (UcaAndorCameraPrivate *priv, AT_U8 *input_buffer, gpointer data)
+/**
+ * In the specific case where METADATA is used, convert buffer into correct pixel encoding + remove padding + remove METADATA from data + overwrite 4 first pixels with
+ * timestamp clock value retrieved from metadata.
+ * TODO: for now, it assumes that METADATA and Timestamp are enabled while FrameInfo is disabled, we should check that in the future to be more 
+ * reliable and if we want to improve (currently not possible because features described in documentation are not implemented on actual camera)
+ * NOTE: this function does not check if metadata is enabled, it should not be called if this is not the case
+ */
+{
+	int error_number, ticks_offset, ticks_cid, framedata_size, framedata_cid, framedata_offset;
+	AT_U8 *end_metadata, *temp_buffer;
+	AT_64 timestamp;
+
+/* Extracting timestamp from metadata */
+
+	end_metadata = input_buffer + priv->image_size; 				/* Metadata has to be read starting from end of data memory space */
+	ticks_cid = *(int *)(end_metadata - METADATA_LENGTH_SIZE - METADATA_CID_SIZE);	/* Get first block's CID (which should be Ticks) */
+	if (ticks_cid != METADATA_CID_TICKS) {						/* We are not in Tick block -> unsupported */
+		g_warning ("Metadata format error: espected reading 'Tick' block (of CID = 1) but got CID = %d instead", ticks_cid);
+		return 1005;
+	}
+	ticks_offset = METADATA_LENGTH_SIZE + METADATA_CID_SIZE	+ METADATA_TIMESTAMP_SIZE;	/* offset from end of metadata to begin of 'Ticks' block's memory space */
+	timestamp = *(AT_64 *)(end_metadata - ticks_offset);					/* Get the value of timestamp */
+
+/* Converting buffer to frame stripped from padding and metadata */
+
+	framedata_size = *(int *)(end_metadata - ticks_offset - METADATA_LENGTH_SIZE); /* Get the second block's size in bytes (which should be FrameData) */
+	framedata_cid = *(int *)(end_metadata - ticks_offset - METADATA_LENGTH_SIZE - METADATA_CID_SIZE);	/* Get second block's CID (which should be 'Frame Data') */
+	if (framedata_cid != METADATA_CID_FRAMEDATA) {		
+		g_warning ("Metadata format error: espected reading 'FrameData' block (of CID = 0) but got CID = %d instead", framedata_cid);
+		return 1005;
+	}
+	/* Remember NOT to count CID_SIZE because it is already included in framedata_size (the length block contain data length + cid length) */
+	framedata_offset = ticks_offset + METADATA_LENGTH_SIZE + framedata_size; 
+	temp_buffer = (AT_U8 *)(end_metadata - framedata_offset);
+	error_number = AT_ConvertBuffer (temp_buffer, (AT_U8 *) data, priv->aoi_width, priv->aoi_height, priv->aoi_stride, priv->pixel_encoding_wchar, L"Mono16");
+	if (error_number)
+		return error_number;
+
+/* Concatenating timestamp onto frame */
+
+	calculate_frame_number(priv, timestamp);
+	add_time_to_frame(timestamp, data, priv->frame_number);
+
+	return 0;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -290,6 +790,24 @@ free_read_string_resources:
  */
 
 static GParamSpec *andor_properties [N_PROPERTIES] = { NULL, };
+
+GQuark
+uca_andor_camera_error_quark (void)
+{
+    return g_quark_from_static_string ("uca-andor-camera-error-quark");
+}	
+
+gboolean
+check_error (int error_number, const char* message, GError **error)
+{
+    if (error_number != AT_SUCCESS) {
+        g_set_error (error, UCA_ANDOR_CAMERA_ERROR, UCA_ANDOR_CAMERA_ERROR_LIBANDOR_GENERAL,
+		     "Andor error '%s': %s (%i)", message, identify_andor_error(error_number), error_number);
+        return FALSE;
+    }
+
+    return TRUE;
+}
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -343,10 +861,10 @@ uca_andor_camera_start_recording (UcaCamera *camera, GError **error)
 
     if (!check_error (AT_Command (priv->handle, L"AcquisitionStart"),
                       "Could not start acquisition", error))
-        return;
+	return;
 
-    check_error (AT_GetBool (priv->handle, L"CameraAcquiring", &priv->is_cam_acquiring),
-                 "Could not read CameraAcquiring", error);
+    check_error (!read_boolean (priv, L"CameraAcquiring", &priv->is_cam_acquiring),
+                 "Could not read CameraAcquiring", error);	
 }
 
 static void
@@ -360,7 +878,8 @@ uca_andor_camera_stop_recording (UcaCamera *camera, GError **error)
     if (!check_error (AT_Command (priv->handle, L"AcquisitionStop"), "Cannot stop acquisition", error))
         return;
 
-    AT_Flush (priv->handle);
+    check_error (AT_Flush (priv->handle),				
+		 "Could not flush out remaining queued buffers", error);
 
     check_error (AT_GetBool (priv->handle, L"CameraAcquiring", &priv->is_cam_acquiring),
                  "Could not read CameraAcquiring", error);
@@ -397,30 +916,31 @@ uca_andor_camera_set_property (GObject *object, guint property_id, const GValue 
 {
     g_return_if_fail (UCA_IS_ANDOR_CAMERA(object));
     UcaAndorCameraPrivate *priv = UCA_ANDOR_CAMERA_GET_PRIVATE(object);
-    guint val_uint = 0;
+    guint64 val_uint64 = 0;
     double val_double = 0.0;
     gint val_enum = 0;
+    gboolean val_bool = FALSE;	
 
     switch (property_id) {
         case PROP_EXPOSURE_TIME:
             val_double = g_value_get_double (value);
-            if (write_double (priv, L"ExposureTime", val_double))
-                priv->exp_time = (gdouble) val_double;
+            if (write_double (priv, L"ExposureTime", val_double)) 
+                read_double (priv, L"ExposureTime", &priv->exp_time);	/* When writting a float, we should always immediatly read it afterward to get the actual value */
             break;
         case PROP_ROI_WIDTH:
-            val_uint = g_value_get_uint (value);
-            if (write_integer (priv, L"AOIWidth", val_uint))
-                priv->aoi_width = (guint) val_uint;
+            val_uint64 = g_value_get_uint (value);
+            if (write_integer (priv, L"AOIWidth", val_uint64))
+                priv->aoi_width = (guint) val_uint64;
             break;
         case PROP_ROI_HEIGHT:
-            val_uint = g_value_get_uint (value);
-            if (write_integer (priv, L"AOIHeight", val_uint))
-                priv->aoi_height = (guint) val_uint;
+            val_uint64 = g_value_get_uint (value);
+            if (write_integer (priv, L"AOIHeight", val_uint64))
+                priv->aoi_height = (guint) val_uint64;
             break;
         case PROP_ROI_X:
-            val_uint = g_value_get_uint (value);
-            if (write_integer (priv, L"AOILeft", val_uint))
-                priv->aoi_left = val_uint;
+            val_uint64 = g_value_get_uint (value);
+            if (write_integer (priv, L"AOILeft", val_uint64))
+                priv->aoi_left = val_uint64;
             break;
         case PROP_ROI_Y:
             val_uint = g_value_get_uint (value);
@@ -488,10 +1008,11 @@ uca_andor_camera_get_property (GObject *object, guint property_id, GValue *value
 {
     g_return_if_fail (UCA_IS_ANDOR_CAMERA(object));
     UcaAndorCameraPrivate *priv = UCA_ANDOR_CAMERA_GET_PRIVATE(object);
-    gint64 val_uint = 0;
+    guint64 val_uint64 = 0;
     double val_double = 0.0;
     gint val_enum = 0;
     gchar* val_char;
+    gboolean val_bool = FALSE;		
 
     switch (property_id) {
         case PROP_NAME:
@@ -502,36 +1023,36 @@ uca_andor_camera_get_property (GObject *object, guint property_id, GValue *value
                 g_value_set_double (value, val_double);
             break;
         case PROP_ROI_WIDTH:
-            if (read_integer (priv, L"AOIWidth", &val_uint))
-                g_value_set_uint (value, val_uint);
+            if (read_integer (priv, L"AOIWidth", &val_uint64))
+                g_value_set_uint (value, val_uint64);
             break;
         case PROP_ROI_HEIGHT:
-            if (read_integer (priv, L"AOIHeight", &val_uint))
-                g_value_set_uint (value, val_uint);
+            if (read_integer (priv, L"AOIHeight", &val_uint64))
+                g_value_set_uint (value, val_uint64);
             break;
         case PROP_ROI_X:
-            if (read_integer (priv, L"AOILeft", &val_uint))
-                g_value_set_uint (value, val_uint);
+            if (read_integer (priv, L"AOILeft", &val_uint64))
+                g_value_set_uint (value, val_uint64);
             break;
         case PROP_ROI_Y:
-            if (read_integer (priv, L"AOITop", &val_uint))
-                g_value_set_uint (value, val_uint);
+            if (read_integer (priv, L"AOITop", &val_uint64))
+                g_value_set_uint (value, val_uint64);
             break;
         case PROP_SENSOR_WIDTH:
-            if (read_integer (priv, L"SensorWidth", &val_uint))
-                g_value_set_uint (value, val_uint);
+            if (read_integer (priv, L"SensorWidth", &val_uint64))
+                g_value_set_uint (value, val_uint64);
             break;
         case PROP_SENSOR_HEIGHT:
-            if (read_integer (priv, L"SensorHeight", &val_uint))
-                g_value_set_uint (value, val_uint);
+            if (read_integer (priv, L"SensorHeight", &val_uint64))
+                g_value_set_uint (value, val_uint64);
             break;
         case PROP_SENSOR_PIXEL_WIDTH:
             if (read_double (priv, L"PixelWidth", &val_double))
-                g_value_set_double (value, val_double);
+                g_value_set_double (value, val_double*1e-6);
             break;
         case PROP_SENSOR_PIXEL_HEIGHT:
             if (read_double (priv, L"PixelHeight", &val_double))
-                g_value_set_double (value, val_double);
+                g_value_set_double (value, val_double*1e-6);
             break;
         case PROP_SENSOR_BITDEPTH:
             g_value_set_uint (value, 16);
@@ -543,8 +1064,8 @@ uca_andor_camera_get_property (GObject *object, guint property_id, GValue *value
             break;
 #endif
         case PROP_ROI_STRIDE:
-            if (read_integer (priv, L"AOIStride", &val_uint))
-                g_value_set_uint (value, val_uint);
+            if (read_integer (priv, L"AOIStride", &val_uint64))
+                g_value_set_uint (value, val_uint64);
             break;
         case PROP_FRAMERATE:
             if (read_double (priv, L"FrameRate", &val_double))
