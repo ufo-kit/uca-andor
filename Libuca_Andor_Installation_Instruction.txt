@@ -1,0 +1,265 @@
+Autor: 		Vincent 
+last update:	04.07.2017
+
+Abstract:
+This document sums up the installation procedure for the entire configuration of the Andor Neo Camera access through libuca.
+Though this document cannot be at 100% exaustive (especially concerning Linux in itself), it tries to describe as precisely
+as possible all the installation manipulations in order to make the system work without encountering any difficulty.
+
+
+/!\ NOTE: This document has to be confirmed ... /!\
+
+
+#########################################################################################################################################
+>> Configurations tested
+------------------------
+	
+>> Configuration #1 : successfull (but works weirdly)
+
+	- OS:						debian 8.8.0
+	- kernel:					3.16.0
+	- Frame Grabber cardboard:			Neo-2-6-6089-CLB
+	- Andor SDK package:				3.13.30001
+	- Bitflow driver:				9.05			(supplied in the 3.13.30001 SDK package)
+
+  /!\	For some reason, under this OS many commands in the terminal have to be called with "sudo" though it should not be necessary 
+   	(error example encountered if not using sudo: "ldconfig: not found"). Some libuca commands may also not work executed in sudo 
+	mod. It may be due to an error in the user configuration under debian 8, but in any case this is not due to an installation error 
+	of libuca or the SDK.
+
+	
+>> Configuration #2 : does not work...
+
+The communication link between the computer and the frame grabber seems to exist, but each time we try to access the camera it crash the 
+bitflow driver module (terminal freeze, and impossible to remove the bitflow.ko driver module or kill the
+process... only solution = reboot). After running successfully the configuration #3 below, it appears that this is a kernel
+compatibility problem.
+
+	- OS:						ubuntu 16.04 LTS
+ 	- kernel:					4.8.0
+	- Frame Grabber cardboard:			Neo-2-6-6089-CLB
+	- Andor SDK package:				3.13.30001
+	- Bitflow driver:				9.05			(supplied in the 3.13.30001 SDK package)
+
+
+>> Configuration #3 : successfull
+
+	- OS:						ubuntu 16.04 LTS
+ 	- kernel:					4.4.0			(see below for installation)
+	- Frame Grabber cardboard:			Neo-2-6-6089-CLB
+	- Andor SDK package:				3.13.30001
+	- Bitflow driver:				9.05			(supplied in the 3.13.30001 SDK package)
+
+=> At this moment, it appears that the configuration #3 is the best one fur running properly the camera.
+
+#########################################################################################################################################
+>> General Linux configuration
+------------------------------
+
+The following information describe the general premilinary needed Linux's configuration in order to all the system run 
+properly, according to issues I have encountered during the process. This is mainly for the attention of unused Linux's users.
+
+If you are used to Linux environment, you can skip this part.
+
+>> Setting debian 8.8.0:
+	
+	- Set your account as administrator
+	- Add your user name in the superuser list:
+		$ su
+		$ sudo visudo
+		- Find the lines: 			"# User privilege specification
+							 root    ALL=(ALL:ALL) ALL"
+		- type under this the following line: 	"usr    ALL=(ALL:ALL) ALL"
+		- type ctrl+x then y then enter 
+	
+	$ apt-get install g++
+	$ sudo apt-get install linux-headers-$(uname -r)
+		
+
+>> Installing kernel 4.4.0 on ubuntu 16.04 (64B system):
+
+	[This part assume that you have already installed Ubuntu 16.04 with a newer kernel version than 4.4.0, for example
+	 the 4.8.0 version shown in the configuration #1]
+
+	$ cd /tmp/
+	$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.4-wily/linux-headers-4.4.0-040400_4.4.0-040400.201601101930_all.deb
+	$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.4-wily/linux-headers-4.4.0-040400-generic_4.4.0-040400.201601101930_amd64.deb
+	$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.4-wily/linux-image-4.4.0-040400-generic_4.4.0-040400.201601101930_amd64.deb
+	$ sudo dpkg -i *.deb
+	- you can then set this boot configuration as default using grub customizer:
+		$ sudo apt-get install grub-customizer
+		- in grub customizer, move "Ubuntu, with Linux 4.4.0-040400-generic" at the top of the loading list
+		-> you may have to do this step again after, for example, :Linux's updates (newest version will be placed on the top of the list)
+
+
+>> Removing the kernel 4.4.0:
+
+	$ sudo apt-get remove linux-headers-4.4.0-* linux-image-4.4.0-*; sudo update-grub
+
+
+
+#########################################################################################################################################
+>> Installation procedure
+-------------------------
+
+
+>> Installation of the Andor SDK:
+
+[This document assume that the right Andor SDK .tgz archive is located in your /home/'your_user_name'/dev directory]
+[This information is also available in the document Software Development Kit 3.pdf in the -/andor/doc directory of the archive]
+
+	- extract here the archive
+		-> this should create a new folder: /home/'your_user_name'/dev/andor
+
+	- change directory to this newly created andor folder and run the installer ie:
+		$ sudo ./install_andor
+		-> if your platform cannot be determinate automatically, the installer will ask for it with the following message :
+
+		"Platform cannot be automatically determined. Please select platform to install:
+		1. 32-bit
+		2. 64-bit
+		3. Exit
+		Selection:"
+
+		- to any other question, always answer yes (type "y")
+
+	-> to make sure that the installation is successful, you can check that a new folder /usr/local/mod as been created
+	   containing the file "bitflow.ko". If not, try again the previous step or try running the "install" script in the 
+	   -/andor/bitflow folder (that should not be necessary)
+
+	- you can test the correct installation of the software by running an example provided in the package:
+		- move to -/andor/examples/listdevices
+		$ sudo make
+		$ ./ listdevices
+			-> please note that until the bitflow driver is correctly set (not yet done according to this document), 
+			   the camera will not be detected, you should thus see the following message:
+
+			"Found 2 Devices.
+			Device 0 : SIMCAM CMOS
+			Device 1 : SIMCAM CMOS
+			Press any key and enter to exit."
+
+			-> if not, you may need to set the LD_LIBRARY_PATH to the requested missing library asked by the
+			error message
+
+
+>> Configuration of the Bitflow driver:
+
+[This information is also available in the documents Software Development Kit 3.pdf and BitflowManualConfig.txt in the 
+ -/andor/doc directory of the archive]
+
+	-> the previous installation of the SDK should have prepared the installation for the bitflow driver
+	- edit the file /etc/rc.local (exactly under this form on debian 8 and ubuntu 16.04) by adding the following lines just before
+	  "exit 0"
+
+	/sbin/modprobe v4l2_common
+	/sbin/modprobe v4l1_compat 	(only include this line if your kernel version is below 2.6.38)
+					(use 'uname -r' to find out your kernel version)
+	/sbin/modprobe videodev
+	/sbin/insmod /usr/local/mod/bitflow.ko fwDelay1=200 customFlags=1
+	chmod a+rw /dev/video*/sbin/modprobe videodev"
+
+	- add the "nopat" kernel option to your boot loader, to do that:
+		> on debian & ubuntu
+		$ gksudo gedit /etc/default/grub
+		- find the line: GRUB_CMDLINE_LINUX_DEFAULT="quiet [potential additionnal options]"
+		- add "nopat" to the options
+			-> you should obtain: GRUB_CMDLINE_LINUX_DEFAULT="quiet [potential additionnal options] nopat"
+		- save and close
+		$ sudo update-grub
+
+	- you can check that the option has been added with :
+		$ cat /proc/cmdline
+		-> for example "BOOT_IMAGE=/boot/vmlinuz-3.16.0-4-amd64 root=UUID=9bb313fb-2025-4277-85b4-bafb40626f65 ro quiet nopat"
+		-> if this is not the case, reboot your computer (you can also do it after the end of this part of the procedure)
+	
+	- install libnuma
+		$ sudo apt-get install libnuma-dev
+
+	- reboot in order to make sure that all the parameters and drivers are correctly loaded
+	- check that the drivers are correctly loaded:
+		$ lsmod
+		-> you should obtain among other lines :	Module                  Size  Used by
+								...			 ...  ...	
+								bitflow               163301  0 
+								v4l2_common            12995  0 
+								videodev              126451  2 v4l2_common,bitflow 
+								...			 ...  ...
+
+		-> those drivers should be loaded at each boot without need of loading them manually (ie. using $ modprobe), if not
+		   the installation is incomplete
+ 
+=> Now you should be able to run the examples supplied in your -/andor/examples folder
+	-> When running listdevices:
+		"Found 3 Devices.
+		 Device 0 : DC-152Q-C00-FI
+		 Device 1 : SIMCAM CMOS
+		 Device 2 : SIMCAM CMOS
+		 Press any key and enter to exit."
+	-> The "image" example should allow you to capture a clear image (with the correct lens obviously)
+
+	-> You may obtain an communication error (code 10) when trying to run those examples, indicating that the communication
+	   link has crashed (but that there is actually a request sent to the frame grabber, indicating that the link is here). 
+	   In this case, reboot both camera and computer.
+
+
+>> Installation of libuca:
+	$ sudo apt-get install libglib2.0 cmake gcc
+	$ sudo apt-get install libgtk+2.0-dev
+	$ sudo apt-get install gobject-introspection
+	$ sudo apt-get install libgirepository1.0-dev
+	$ sudo apt-get install git
+	$ sudo apt-get install libtiff5-de
+	- change directory to /home/usr/dev
+	$ git clone https://github.com/ufo-kit/libuca
+	$ cd libuca
+	$ mkdir build
+	$ cd build
+	$ sudo rm -rf * ; cmake .. ; make ; sudo make install (the command 'rm -rf *' is usefull when re-installing...)
+
+
+>> Installation of uca-andor:
+	- change directory to /home/usr/dev
+	$ git clone https://github.com/ufo-kit/uca-andor
+	$ cd uca-andor
+	$ mkdir build
+	$ cd build
+	$ sudo rm -rf * ; cmake .. ; make ; sudo make install (the command 'rm -rf *' is usefull when re-installing...)
+
+	- set the lib path ie.:
+		$ sudo gedit /etc/bash.bashrc
+		- at the end of the file, add the lines:	export LD_LIBRARY_PATH=/usr/local/lib
+								export GI_TYPELIB_PATH=/usr/local/lib/girepository-1.0
+
+
+=> Now, regardless the bitflow and SDK installation was successfull or not, you should be able to use "uca" commands with the
+   provided "mock" camera plugin.
+	$ uca-info mock
+		-> display info on the mock camera
+	$ uca-camera-control -c mock
+		-> start graphical camera control (mock camera plugin provide random noise to emulate a camera)
+
+=> If the installation of bitflow and SDK was successfull, you should also be able to use those commands with the "andor"
+   camera.
+	-> by using $ uca-info andor you should obtain:
+	" RO | name                      | "DC-152Q-C00-FI""
+					 [actual camera model]
+
+	-> using $ uca-camera-control -c andor should allow you to control the actual camera
+
+	-> if the name displayed by uca-info is "SIMCAM CMOS (model)" or uca-camera-control give only a black screen as frames,
+	   that means that there is no communication between the computer and the camera (camera turned off, bitflow or SDK not 
+	   correctly installed...)
+
+	-> if uca commands return a communication error (code 10), it means that the link is actualy here but something has
+	   crashed (happens sometimes when trying to stop camera acquisition). Rebooting should solve the problem.
+
+
+#########################################################################################################################################
+
+/!\ IMPORTANT NOTE /!\
+
+For some reason, the libuca graphic camera controller can crash when trying to stop the acquisition (communication error code
+10), when this happen all comunication will then be impossible no matter the way took to communicate with the camera.
+Rebooting both computer and camera usually solve the problem.
+

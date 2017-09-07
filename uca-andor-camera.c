@@ -16,16 +16,35 @@
  * Franklin St, Fifth Floor, Boston, MA 02110, USA
  */
 
-#include <uca/uca-camera.h>
+
+/** WARNING:
+ *	This plugin has been tested under the following configuration:
+ *		Ubuntu 16.04 LTS 
+ *		Kernel version = 4.4.0
+ *		Camera 'Andor Neo' ; model 'DC-152Q-FOO-FI' ; Ser.No = SCC-1837
+ *		Internal firmware version = V3
+ * 	There is no warranty that this plugin will be compatible under any other configuration, especially when using newer firmware version.
+ */
+
+#include <uca/uca-camera.h>	
 #include <gio/gio.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 #include "atcore.h"
-#include "uca-andor-camera.h"
+#include "atutility.h"			
+#include "uca-andor-camera.h" 	
+#include "uca-andor-enums.h"		
+
+/** 
+ * atutility:
+ * Additional utilities functions provided by Andor.
+ * WARNING: Some functions in this header use C++ syntaxe: it is needed to comment them manually in order to the plugin to compile.s
+ */
 
 #define UCA_ANDOR_CAMERA_GET_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE((obj), UCA_TYPE_ANDOR_CAMERA, UcaAndorCameraPrivate))
+
 
 static void uca_andor_initable_iface_init(GInitableIface *iface);
 
@@ -34,6 +53,21 @@ G_DEFINE_TYPE_WITH_CODE (UcaAndorCamera, uca_andor_camera, UCA_TYPE_CAMERA,
 
 #define TIMEBASE_INVALID        0xDEAD
 #define NUM_BUFFERS             10
+#define WAIT_BUFFER_TIMEOUT	10000 		/* Time allowed for the camera to return buffer before raising error; original = 10000 (10s) */
+
+/**
+ * UcaAndorCameraError
+ * @ANDOR_NOERROR:				
+ * @UCA_ANDOR_CAMERA_ERROR_LIBANDOR_INIT:	
+ * @UCA_ANDOR_CAMERA_ERROR_LIBANDOR_GENERAL:	
+ * @UCA_ANDOR_CAMERA_ERROR_UNSUPPORTED:
+ * @UCA_ANDOR_CAMERA_ERROR_INVALID_MODE:
+ * @UCA_ANDOR_CAMERA_ERROR_MODE_NOT_AVAILABLE:
+ * @UCA_ANDOR_CAMERA_ERROR_ENUM_OUT_OF_RANGE:
+ *
+ * This enumerated is currently not used : when error detected and GError is available, just set by default LIBANDOR_GENERAL
+ */
+
 
 struct _UcaAndorCameraPrivate {
     guint camera_number;
@@ -78,13 +112,13 @@ static gint andor_overrideables [] = {
     PROP_SENSOR_PIXEL_WIDTH,
     PROP_SENSOR_PIXEL_HEIGHT,
     PROP_IS_RECORDING,
-    PROP_SENSOR_BITDEPTH,
+    PROP_SENSOR_BITDEPTH,	
     PROP_HAS_CAMRAM_RECORDING,
     PROP_HAS_STREAMING,
     0,
 };
 
-enum {
+enum {				
     PROP_ROI_STRIDE = N_BASE_PROPERTIES,
     PROP_SENSOR_TEMPERATURE,
     PROP_TARGET_SENSOR_TEMPERATURE,
@@ -94,7 +128,7 @@ enum {
     N_PROPERTIES
 };
 
-static GParamSpec *andor_properties [N_PROPERTIES] = { NULL, };
+/////////////////////////////////////////////////////////////////////////////
 
 GQuark
 uca_andor_camera_error_quark (void)
@@ -134,7 +168,6 @@ read_integer (UcaAndorCameraPrivate *priv, const AT_WC* property, gint64 *value)
         g_warning ("Could not read `%s'", (const gchar *) property);
         return FALSE;
     }
-
     *value = temp;
     return TRUE;
 }
@@ -159,7 +192,6 @@ read_double (UcaAndorCameraPrivate *priv, const AT_WC* property, double *value)
         g_warning ("Could not read `%s'", (const gchar *) property);
         return FALSE;
     }
-
     *value = temp;
     return TRUE;
 }
@@ -175,7 +207,7 @@ write_enum_index (UcaAndorCameraPrivate *priv, const AT_WC* property, int value)
     }
 
     if (value >= count || value < 0) {
-        g_warning ("Enumeration value out of range [0, %i]", count - 1);
+        g_warning ("Enumeration value (%d) out of range [0, %i] for feature '%S'", value, count - 1, property);
         return FALSE;
     }
 
@@ -183,7 +215,6 @@ write_enum_index (UcaAndorCameraPrivate *priv, const AT_WC* property, int value)
         g_warning ("Could not set enum `%s'", (const gchar *) property);
         return FALSE;
     }
-
     return TRUE;
 }
 
@@ -196,7 +227,6 @@ read_enum_index (UcaAndorCameraPrivate *priv, const AT_WC* property, int *value)
         g_warning ("Could not read `%s'", (const gchar *) property);
         return FALSE;
     }
-
     *value = temp;
     return TRUE;
 }
@@ -236,7 +266,6 @@ read_string (UcaAndorCameraPrivate *priv, const AT_WC *property, gchar **value)
         return FALSE;
     }
 
-    /* TODO: we should actually get the correct size, but oh well ... */
     wide_value = g_malloc0 (1023 * sizeof (AT_WC));
 
     if (AT_GetEnumStringByIndex (priv->handle, property, index, wide_value, 1023) != AT_SUCCESS) {
@@ -253,13 +282,48 @@ free_read_string_resources:
     return result;
 }
 
+/////////////////////////////////////////////////////////////////////////////
+
+/*	##################
+ *	# ERROR HANDLING #
+ *	##################
+ */
+
+static GParamSpec *andor_properties [N_PROPERTIES] = { NULL, };
+
+/////////////////////////////////////////////////////////////////////////////
+
+/*	#############
+ *	# CALLBACKS #
+ *	#############
+ */
+
+int 
+AT_EXP_CONV watch_for_PixelEncoding (AT_H Handle, const AT_WC* Feature, void* Context) 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	int index, error_number;
+
+	if (!read_enum_index (priv, L"PixelEncoding", &index))
+		return 0;
+	priv->pixel_encoding_wchar = g_malloc0 (1023 * sizeof (AT_WC));
+	error_number = AT_GetEnumStringByIndex (priv->handle, L"PixelEncoding", index, priv->pixel_encoding_wchar, 1023);
+	return 0;
+}
+
+
+/////////////////////////////////////////////////////////////////////////////
+
+/*	######################################
+ *	# USER (LIBUCA) ACCESSIBLE FUNCTIONS #
+ *	######################################
+ */
+
 static void
 uca_andor_camera_start_recording (UcaCamera *camera, GError **error)
 {
     UcaAndorCameraPrivate *priv;
-
     g_return_if_fail (UCA_IS_ANDOR_CAMERA(camera));
-
     priv = UCA_ANDOR_CAMERA_GET_PRIVATE (camera);
 
     AT_GetInt (priv->handle, L"ImageSizeBytes", &priv->image_size);
@@ -305,34 +369,27 @@ uca_andor_camera_stop_recording (UcaCamera *camera, GError **error)
 static gboolean
 uca_andor_camera_grab (UcaCamera *camera, gpointer data, GError **error)
 {
-    UcaAndorCameraPrivate *priv;
-    AT_U8* buffer;
-    int size;
-    int error_number;
+	UcaAndorCameraPrivate *priv;
+	AT_U8* buffer;
+	int err, size;	
+	
+	g_return_val_if_fail (UCA_IS_ANDOR_CAMERA(camera), FALSE);
+	priv = UCA_ANDOR_CAMERA_GET_PRIVATE(camera);
 
-    g_return_val_if_fail (UCA_IS_ANDOR_CAMERA(camera), FALSE);
-    priv = UCA_ANDOR_CAMERA_GET_PRIVATE(camera);
+	err = AT_WaitBuffer (priv->handle, &buffer, &size, WAIT_BUFFER_TIMEOUT);
+	if (!check_error (err, "Could not grab frame", error)) return FALSE;
 
-    error_number = AT_WaitBuffer (priv->handle, &buffer, &size, 10000);
+	/* Decoding buffer */
+		err = AT_ConvertBuffer (buffer, (AT_U8*) data, priv->aoi_width, priv->aoi_height, priv->aoi_stride, priv->pixel_encoding_wchar, L"Mono16");
+		if (!check_error (err, "Could not convert buffer", error))
+			return FALSE;
 
-    if (!check_error (error_number, "Could not grab frame", error))
-        return FALSE;
+	/* Re-queue used buffer -> Useless in 'Fixed' cycle mode ... but as long as we flush out at both end and start of acquisition it does not matter */
+		err=AT_QueueBuffer (priv->handle, buffer, size);
+		if (!check_error (err, "Could not queue new buffer", error))
+			return FALSE;
 
-    if (priv->aoi_width * 2 == priv->aoi_stride) {
-        g_memmove (data, buffer, priv->aoi_width * priv->aoi_height * 2);
-    }
-    else {
-        gsize offset = 0;
-
-        for (guint i = 0; i < priv->aoi_height; i++) {
-            g_memmove (((guint16 *) data) + i * priv->aoi_width, buffer + offset, priv->aoi_width * 2);
-            offset += priv->aoi_stride;
-        }
-    }
-
-    AT_QueueBuffer (priv->handle, buffer, size);
-
-    return TRUE;
+	return TRUE;	
 }
 
 static void
@@ -524,7 +581,7 @@ uca_andor_camera_get_property (GObject *object, guint property_id, GValue *value
             G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
             break;
     }
-}
+} 
 
 static gboolean
 ufo_andor_camera_initable_init (GInitable *initable,
@@ -559,14 +616,23 @@ static void
 uca_andor_camera_finalize (GObject *object)
 {
     UcaAndorCameraPrivate *priv;
-
     g_return_if_fail (UCA_IS_ANDOR_CAMERA(object));
     priv = UCA_ANDOR_CAMERA_GET_PRIVATE(object);
+    int error_number;		
+
+    if (!priv->is_sim_cam) {	/* callbacks are only registered (and thus need to be unregistered) if this is the actual camera */
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"PixelEncoding", watch_for_PixelEncoding, (void *) priv);				
+	if (error_number) g_error ("Could not unregister PixelEncoding Callback: %s (%d)", identify_andor_error(error_number), error_number);	
+
+    }
 
     if (AT_Close (priv->handle) != AT_SUCCESS)
         return;
 
     if (AT_FinaliseLibrary () != AT_SUCCESS)
+        return;
+
+    if (AT_FinaliseUtilityLibrary () != AT_SUCCESS)	
         return;
 
     g_free (priv->image_buffer);
@@ -665,25 +731,27 @@ uca_andor_camera_init (UcaAndorCamera *self)
     priv->image_buffer = NULL;
 
     error = &(priv->construct_error);
-    error_number = AT_InitialiseLibrary ();
 
+    error_number = AT_InitialiseLibrary ();
     if (!check_error (error_number, "Could not initialize library", error))
+        return;
+    error_number = AT_InitialiseUtilityLibrary (); 					
+    if (!check_error (error_number, "Could not initialize utility library", error))	
         return;
 
     priv->camera_number = 0;
     priv->is_sim_cam = FALSE;
 
     error_number = AT_Open (priv->camera_number, &handle);
-    if (!check_error (error_number, "Opening Handle", error)) return;
+    if (!check_error (error_number, "Could not open Handle", error)) return;
 
     priv->handle = handle;
+
+/*  Retreiving informations at initialisation */
     priv->model = g_malloc0 (1023 * sizeof (gchar));
     model = g_malloc0 (1023 * sizeof (AT_WC));
-
     error_number = AT_GetString (handle, L"CameraModel", model, 1023);
-
-    if (!check_error (error_number, "Cannot read CameraModel", error))
-        return;
+    if (!check_error (error_number, "Cannot read CameraModel", error)) return;
 
     gchar* modelchar = g_malloc0 ((wcslen (model) + 1) * sizeof (gchar));
     wcstombs (modelchar, model, wcslen (model));
@@ -695,6 +763,7 @@ uca_andor_camera_init (UcaAndorCamera *self)
         AT_WC* name = g_malloc0 (1023*sizeof (AT_WC));
         error_number = AT_GetString (handle, L"CameraName", name, 1023);
         priv->name = g_strdup (priv->model);
+	if (!check_error (error_number, "Cannot read name", error)) return;
     }
     else {
         priv->name = g_strdup ("SIMCAM CMOS (model)");
@@ -753,8 +822,17 @@ uca_andor_camera_init (UcaAndorCamera *self)
 
     uca_camera_register_unit (UCA_CAMERA (self), "frame-rate", UCA_UNIT_COUNT);
 
+    if (!priv->is_sim_cam) {	/* Features and Callbacks only implemented on actual camera and not on SIMCAM */
+
+	/*  CALLBACKS registration (initialisations) */
+	error_number = AT_RegisterFeatureCallback(handle, L"PixelEncoding", watch_for_PixelEncoding, (void *) priv);	
+	if (!check_error (error_number, "Could not register PixelEncoding Callback", error)) return;
+    }
+							
+
     g_free (model);
     g_free (modelchar);
+
 }
 
 G_MODULE_EXPORT GType

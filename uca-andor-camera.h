@@ -3,9 +3,11 @@
  *
  */
 
+
 #ifndef __UCA_ANDOR_CAMERA_H
 #define __UCA_ANDOR_CAMERA_H
 
+#include <glib-object.h>
 #include <uca/uca-camera.h>
 
 G_BEGIN_DECLS
