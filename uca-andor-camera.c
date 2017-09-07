@@ -52,8 +52,9 @@ G_DEFINE_TYPE_WITH_CODE (UcaAndorCamera, uca_andor_camera, UCA_TYPE_CAMERA,
                          G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, uca_andor_initable_iface_init))
 
 #define TIMEBASE_INVALID        0xDEAD
-#define NUM_BUFFERS             10
 #define WAIT_BUFFER_TIMEOUT	10000 		/* Time allowed for the camera to return buffer before raising error; original = 10000 (10s) */
+#define MARGIN			0.01		/* Framerate margin used when setting framerate at max transfer rate (frame_rate = max_interface_transfer_rate - MARGIN) */
+#define INTERNAL_MEMORY		3981262199	/* Estimated memory according to experimental tests made on actual camera (should be 4GB) */
 
 /* Available values for check_access function's parameters */
 #define CHECK_ACCESS_WRITE	0		
@@ -61,6 +62,15 @@ G_DEFINE_TYPE_WITH_CODE (UcaAndorCamera, uca_andor_camera, UCA_TYPE_CAMERA,
 #define CHECK_ACCESS_WARN	TRUE		
 #define CHECK_ACCESS_SILENT	FALSE		
 
+/* METADATA memory length values */
+#define	METADATA_CID_SIZE	4		/* Lenght in Bytes of each 'CID' field in METADATA (CID = Chunk / Block Identifier) */
+#define	METADATA_LENGTH_SIZE	4		/* Length in Bytes of each 'length' field in METADATA (contain length of the block just above in memory)*/
+#define	METADATA_TIMESTAMP_SIZE	8		/* Length in Bytes of 'Timestamp' field in METADATA */
+
+/* METADATA CID values (CID = Chunk / Block Identifier) */
+#define METADATA_CID_FRAMEDATA	0		/* CID of block containing actual frame's raw data (+padding) */
+#define METADATA_CID_TICKS	1		/* CID of block containing internal timestamp clock at exposure start */
+#define METADATA_CID_FRAMEINFO	7		/* CID of block containing frame's pixel encoding + AOI stride + AOI height + AOI width */
 
 /**
  * UcaAndorCameraError
@@ -75,6 +85,33 @@ G_DEFINE_TYPE_WITH_CODE (UcaAndorCamera, uca_andor_camera, UCA_TYPE_CAMERA,
  * This enumerated is currently not used : when error detected and GError is available, just set by default LIBANDOR_GENERAL
  */
 
+/**
+ * UcaAndorCameraSPAGC:
+ * @UCA_ANDOR_CAMERA_SPAGC_11BIT_HIGH_CAPACITY:	set the feature to '11bit (high well capacity)'
+ * @UCA_ANDOR_CAMERA_SPAGC_11BIT_LOW_NOISE:	set the feature to '11bit (low noise)'
+ * @UCA_ANDOR_CAMERA_SPAGC_11BIT_HIGH_CAPACITY:	set the feature to '16bit (low noise & high well capacity)'
+ */
+
+/**
+ * UcaAndorCameraShutteringMode:
+ * @UCA_ANDOR_CAMERA_SHUTTERING_MODE_ROLLING:	when reading out pixels, each row is read successively, 2 rows at a time, starting at the middle of ROI (one row going up
+ *					while the other goes down) -> make acquisition faster with less noise but can result in image distorsion  
+ * @UCA_ANDOR_CAMERA_SHUTTERING_MODE_GLOBAL:	when reading out pixels, every rows are read simultaneously
+ */
+
+/**
+ * UcaAndorCameraPixelReadoutRate:
+ * @UCA_ANDOR_CAMERA_PIXEL_READOUT_RATE_100MHZ:	100 MHz (x2 = 200 if Shutter mode is 'Rolling')
+ * @UCA_ANDOR_CAMERA_PIXEL_READOUT_RATE_200MHZ:	200 MHz (x2 = 400 if Shutter mode is 'Rolling')
+ * @UCA_ANDOR_CAMERA_PIXEL_READOUT_RATE_280MHZ:	280 MHz (x2 = 560 if Shutter mode is 'Rolling')
+ */
+
+/**
+ * UcaAndorCameraFanSpeed:
+ * @UCA_ANDOR_CAMERA_FAN_SPEED_OFF:	fan off (internal heat sink warms up to 45 degC, then fan is automatically set to ON to cool it down)
+ * @UCA_ANDOR_CAMERA_FAN_SPEED_LOW:	low speed (low noise due to vibrations)
+ * @UCA_ANDOR_CAMERA_FAN_SPEED_ON:	high speed (highest heat sink cooling efficienty)
+ */				 
 
 struct _UcaAndorCameraPrivate {
     guint camera_number;
@@ -83,6 +120,9 @@ struct _UcaAndorCameraPrivate {
 
     gchar*  name;
     gchar*  model;
+    gchar*  bitdepth;			
+    gchar*  pixel_encoding;		
+    gchar*  temperature_status;		
     guint64 aoi_left;
     guint64 aoi_top;
     guint64 aoi_width;
@@ -90,23 +130,50 @@ struct _UcaAndorCameraPrivate {
     guint64 aoi_stride;
     guint64 sensor_width;
     guint64 sensor_height;
+    guint64 num_buffers;		
+    guint64 frame_count;		
+    guint64 accumulate_count;		
+    guint64 timestamp_clock;		
+    guint64 timestamp_clock_frequency;	
     gdouble pixel_width;
     gdouble pixel_height;
-    gint trigger_mode;
     gdouble frame_rate;
     gdouble exp_time;
     gdouble sensor_temperature;
     gdouble target_sensor_temperature;
-    gint fan_speed;
-    gchar* cycle_mode;
+    gdouble calculated_bytes_per_pixel;	
+    gdouble frame_rate_max;		
+    gdouble frame_rate_min;		
+    gdouble max_interface_transfer_rate;
+    gint    max_frame_capacity;		
     gboolean is_sim_cam;
     gboolean is_cam_acquiring;
+    gboolean full_aoi_control;		
+    gboolean vertically_centre_aoi;	
+    gboolean fast_aoi_frame_rate_enable;
+    gboolean sensor_cooling;		
+    gboolean spurious_noise_filter;	
+    gboolean static_blemish_correction;	
+    gboolean overlap;
+    gboolean metadata;			
+
+    UcaCameraTriggerSource		trigger_mode;
+    UcaAndorCameraSPAGC 		simple_pre_amp_gain_control;	
+    UcaAndorCameraShutteringMode 	shuttering_mode;		
+    UcaAndorCameraPixelReadoutRate	pixel_readout_rate;		
+    UcaAndorCameraFanSpeed		fan_speed;			
+    UcaAndorCameraAOIBinning		aoi_binning;			
+    UcaAndorCameraCycleMode		cycle_mode;			
 
     AT_WC*  pixel_encoding_wchar; 	/* pixel encoding under AT_WC* format needed to pass it into AT_ConvertBuffer */
     AT_U8*  image_buffer;
     AT_U8*  aligned_buffer;
     AT_64   image_size;               	/* full image (frame + padding + metadata if enabled) memory size in bytes */
 
+    /* Variables used to handle calculation of frame number */
+    gint last_frame_number;
+    gint last_frame_clock;
+    gint frame_number;
 };
 
 static gint andor_overrideables [] = {
@@ -124,6 +191,8 @@ static gint andor_overrideables [] = {
     PROP_SENSOR_BITDEPTH,	
     PROP_HAS_CAMRAM_RECORDING,
     PROP_HAS_STREAMING,
+    PROP_TRIGGER_SOURCE,		
+    PROP_NUM_BUFFERS,			
     0,
 };
 
@@ -134,6 +203,28 @@ enum {
     PROP_FAN_SPEED,
     PROP_CYCLE_MODE,
     PROP_FRAMERATE,
+    PROP_PIXEL_ENCODING,
+    PROP_SIMPLE_PRE_AMP_GAIN_CONTROL,
+    PROP_SHUTTERING_MODE,
+    PROP_FRAMERATE_MAX,	
+    PROP_FRAMERATE_MIN,	
+    PROP_MAX_INTERFACE_TRANSFER_RATE,
+    PROP_IMAGE_SIZE,
+    PROP_MAX_FRAME_CAPACITY,
+    PROP_FAST_AOI_FRAMERATE_ENABLE,
+    PROP_PIXEL_READOUT_RATE,
+    PROP_VERTICALLY_CENTRE_AOI,	
+    PROP_SENSOR_COOLING,
+    PROP_TEMPERATURE_STATUS,
+    PROP_SPURIOUS_NOISE_FILTER,	
+    PROP_STATIC_BLEMISH_CORRECTION,
+    PROP_OVERLAP,
+    PROP_FRAME_COUNT,
+    PROP_ACCUMULATE_COUNT,
+    PROP_AOI_BINNING,
+    PROP_TIMESTAMP_CLOCK,
+    PROP_TIMESTAMP_CLOCK_FREQUENCY,
+    PROP_METADATA,
     N_PROPERTIES
 };
 
@@ -364,6 +455,20 @@ check_access (UcaAndorCameraPrivate *priv, const AT_WC* feature, int access, gbo
 	}
 return FALSE; 		/* by default .. should not be encountered */
 }
+
+static void 
+estimate_max_frame_capacity (UcaAndorCameraPrivate *priv) 
+/**
+ * Calculate the estimated max number of frames that the camera's internal memory can store with current parameters.
+ * 	NOTE : this is an estimation! (Estimating in 11-bit is quite accurate but in 16-bit it is very pessimistic
+ */
+{
+	gfloat memory = INTERNAL_MEMORY;					/* estimated experimentaly on camera (4GB) */
+	gfloat fullAOISize = priv->calculated_bytes_per_pixel * 2560 * 2160;	/* maximum size of frames when using max ROI size */
+	gfloat temp = priv->frame_rate_max * memory / ( fullAOISize * ( priv->frame_rate_max - priv->max_interface_transfer_rate ));
+	priv->max_frame_capacity = (gint) temp;
+	if (temp < 0) priv->max_frame_capacity = G_MAXINT;			/* -> if result < 0, it means that no frames are stored in the memory even at max framerate */
+}										/*    in this case, max_frame_capacity is set to +inf (in fact: int-type's maximum) */
 
 static gboolean
 write_integer (UcaAndorCameraPrivate *priv, const AT_WC* property, guint64 value)
@@ -818,17 +923,202 @@ check_error (int error_number, const char* message, GError **error)
 
 int 
 AT_EXP_CONV watch_for_PixelEncoding (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * 'PixelEncoding' feature specific callback:
+ *	- keep 'pixel_encoding' and 'calculated_bytes_per_pixel' properties up to date
+ *	- fix hardware bug (see below)
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"PixelEncoding" 
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
 {
 	UcaAndorCameraPrivate *priv = Context;
 	int index, error_number;
 
 	if (!read_enum_index (priv, L"PixelEncoding", &index))
 		return 0;
+	if ( (priv->simple_pre_amp_gain_control==UCA_ANDOR_CAMERA_SPAGC_16BIT) && (index == 0) )
+		write_string(priv, L"PixelEncoding", "Mono16");
+/* A bug on hardware can sometimes make the Pixel Encoding switch back from 'Mono16' to 'Mono12' after ending acquisition... the few hardcodded lines above fix 
+ * this problem (identify the case and reset 'Mono16' pixel encoding)
+ */
+	read_string (priv, L"PixelEncoding", &priv->pixel_encoding);
+	read_double (priv, L"BytesPerPixel", &priv->calculated_bytes_per_pixel);
+
 	priv->pixel_encoding_wchar = g_malloc0 (1023 * sizeof (AT_WC));
 	error_number = AT_GetEnumStringByIndex (priv->handle, L"PixelEncoding", index, priv->pixel_encoding_wchar, 1023);
+	if (error_number) 
+		g_warning ("Could not read PixelEncoding (wchar_t format): %s (%d)", identify_andor_error(error_number), error_number);
 	return 0;
 }
 
+int 
+AT_EXP_CONV watch_for_AOIStride (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * 'AOIStride' feature specific callback: keep 'aoi_stride' property up to date
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"AOIStride"
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	read_integer (priv, L"AOIStride", &priv->aoi_stride);
+	return 0;
+}
+
+int 
+AT_EXP_CONV watch_for_BitDepth (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * 'BitDepth' feature specific callback: keep 'bitdepth' property up to date
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"BitDepth"  
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	read_string (priv, L"BitDepth", &priv->bitdepth);
+	return 0;
+}
+
+int 
+AT_EXP_CONV watch_for_FrameRate (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * 'FrameRate' feature specific callback: keep 'frame_rate' propertiy up to date
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"FrameRate" 
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	read_double (priv, L"FrameRate", &priv->frame_rate);
+	read_double_max (priv, L"FrameRate", &priv->frame_rate_max);
+	read_double_min (priv, L"FrameRate", &priv->frame_rate_min);
+	estimate_max_frame_capacity(priv);
+	return 0;
+}
+
+int 
+AT_EXP_CONV watch_for_MaxInterfaceTransferRate (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * 'MaxInterfaceTransferRate' feature specific callback: 
+ *	- set 'framerate' property to the new safe maximum (highest frame rate with which we do not fill the internal memory)
+ *	- keep 'max_frame_capacity' and 'max_interface_transfer_rate' and 'max_frame_capacity ' properties up to date
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"MaxInterfaceTransferRate" 
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	gboolean val_bool;
+
+	read_double (priv, L"MaxInterfaceTransferRate", &priv->max_interface_transfer_rate);
+	read_double_max (priv, L"FrameRate", &priv->frame_rate_max);
+	estimate_max_frame_capacity(priv);
+
+	val_bool = check_access (priv, L"FrameRate", CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN);
+
+	if (val_bool) {
+		if (priv->max_interface_transfer_rate <= priv->frame_rate_max) {
+			if(!write_double (priv, L"FrameRate", (priv->max_interface_transfer_rate - MARGIN)))
+				g_warning("Maximum transfer rate has been modified but frame rate has not been update, "
+					  "resulting in potentially filling the memory until memory runs out");
+		}
+		else {
+			if(!write_double (priv, L"FrameRate", (priv->frame_rate_max)))
+				g_warning("Maximum transfer rate has been modified but frame rate has not been update, resulting in recording slower than needed");
+		}
+	}
+	else
+		g_warning("Maximum transfer rate has been modified but frame rate has not been update, resulting in undefined behaviour");
+	return 0;
+}
+
+int
+AT_EXP_CONV watch_for_ImageSizeBytes (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * 'ImageSizeBytes' feature specific callback: keep 'image_size' property up to date
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"ImageSizeBytes"
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	read_integer (priv, L"ImageSizeBytes", (guint64 *) &priv->image_size);
+	return 0;
+}
+
+int
+AT_EXP_CONV watch_for_Temperature (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * Temperature specific callback: keep 'temperature_status' and 'sensor_temperature' up to date
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"TemperatureStatus"
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ * NOTE : Setting this callback on 'SensorTemperature' is useless: this feature does not trigger any callback (perhaps is it read only when asked for...)
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	read_double (priv, L"SensorTemperature", &priv->sensor_temperature);
+	read_string (priv, L"TemperatureStatus", &priv->temperature_status);
+	return 0;
+}
+
+int
+AT_EXP_CONV watch_for_AOIBinning (AT_H Handle, const AT_WC* Feature, void* Context) 	
+/**
+ * 'AOIBining' feature specific callback: prevent segmentation fault by updating known ROI dimensions
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"AOIBinning"
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+
+	if (!read_integer (priv, L"AOIStride", &priv->aoi_stride)) {
+		g_warning ("ROI Binning has been modified without updating ROI's dimensions, resulting in potential segmentation fault"
+			   "\nPlease reset manually ROI's dimensions");
+		return 0;
+	}
+
+	if (!read_integer (priv, L"AOIHeight", &priv->aoi_height)) {
+		g_warning ("ROI Binning has been modified without updating ROI's dimensions, resulting in potential segmentation fault"
+			   "\nPlease reset manually ROI's dimensions");
+		return 0;
+	}
+
+	if (!read_integer (priv, L"AOIWidth", &priv->aoi_width)) {
+		g_warning ("ROI Binning has been modified without updating ROI's dimensions, resulting in potential segmentation fault"
+			   "\nPlease reset manually ROI's dimensions");
+		return 0;
+	}
+
+	return 0;
+}
+
+int
+AT_EXP_CONV watch_for_CameraAcquiring (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * CameraAcquiring specific callback: keep 'is_cam_acquiring' up to date
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"CameraAcquiring"
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	read_boolean (priv, L"CameraAcquiring", &priv->is_cam_acquiring);
+	return 0;
+}
+
+int
+AT_EXP_CONV watch_for_CameraPresent (AT_H Handle, const AT_WC* Feature, void* Context) 
+/**
+ * CameraPresent specific callback: keep 'is_sim_cam up to date and display warning if camera is disconnected before end of session
+ * This callback's 2nd argument is mandatory to respect the callback prototype, but actually it MUST NOT be anything else than L"CameraAcquiring"
+ * The 'Context' argument MUST contain the (UcaAndorCameraPrivate) priv
+ */ 
+{
+	UcaAndorCameraPrivate *priv = Context;
+	gboolean val_bool;
+
+	read_boolean (priv, L"CameraPresent", &val_bool);
+	if (!val_bool && !priv->is_sim_cam) {
+		g_warning ("Camera '%s' has been disconnected!\nPlease reset", priv->model);
+		priv->is_sim_cam = TRUE;
+		priv->model = "SIMCAM (model)";
+	}
+	return 0;
+}
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -844,20 +1134,40 @@ uca_andor_camera_start_recording (UcaCamera *camera, GError **error)
     g_return_if_fail (UCA_IS_ANDOR_CAMERA(camera));
     priv = UCA_ANDOR_CAMERA_GET_PRIVATE (camera);
 
-    AT_GetInt (priv->handle, L"ImageSizeBytes", &priv->image_size);
-
+/* Memory allocation */			
     if (priv->image_buffer != NULL)
         g_free (priv->image_buffer);
 
-    priv->image_buffer = g_malloc0 ((NUM_BUFFERS * priv->image_size + 8) * sizeof (gchar));
-    priv->aligned_buffer = (AT_U8*) (((unsigned long) priv->image_buffer + 7) & ~0x7);
+    priv->image_buffer = g_malloc0 (	(priv->cycle_mode)   * (priv->num_buffers * priv->image_size + 8) * sizeof (gchar) /* case cycle mode = continous */
+				      +	(1-priv->cycle_mode) * (priv->frame_count * priv->image_size + 8) * sizeof (gchar) /* case cycle mode = fixed */
+				   );
+    priv->aligned_buffer = (AT_U8*) (((unsigned long) priv->image_buffer + 7) & ~0x7);	/* 8 Bytes alignment */
 
-    AT_Flush (priv->handle);
+    if(!check_error (AT_Flush (priv->handle), "Could not flush out remaining queued buffers", error))
+	return;
+		
+    if (priv->cycle_mode == UCA_ANDOR_CAMERA_CYCLE_MODE_CONTINUOUS) {
+	for (int i = 0; i < priv->num_buffers; i++) {
+		if (!check_error (AT_QueueBuffer (priv->handle, priv->aligned_buffer + i * priv->image_size, priv->image_size),
+			  "Could not queue ring buffer", error))
+		return;
+	}
+    }
+    else if (priv->cycle_mode == UCA_ANDOR_CAMERA_CYCLE_MODE_FIXED) {
+	for (int i = 0; i < priv->frame_count; i++) {
+		if (!check_error (AT_QueueBuffer (priv->handle, priv->aligned_buffer + i * priv->image_size, priv->image_size),
+			  "Could not queue ring buffer", error))
+		return;
+	}
+    }
 
-    for (int i = 0; i < NUM_BUFFERS; i++)
-        AT_QueueBuffer (priv->handle, priv->aligned_buffer + i * priv->image_size, priv->image_size);
+/* Initialize everything in order to be able to calculate grabbed frame's number */
 
-    AT_SetEnumString(priv->handle, L"CycleMode", L"Continuous");
+    AT_Command (priv->handle, L"TimestampClockReset");
+    priv->last_frame_number = 0;
+    priv->last_frame_clock = 0;
+
+/* Start recording */
 
     if (!check_error (AT_Command (priv->handle, L"AcquisitionStart"),
                       "Could not start acquisition", error))
@@ -899,14 +1209,23 @@ uca_andor_camera_grab (UcaCamera *camera, gpointer data, GError **error)
 	if (!check_error (err, "Could not grab frame", error)) return FALSE;
 
 	/* Decoding buffer */
+	if (!priv->metadata) {	
 		err = AT_ConvertBuffer (buffer, (AT_U8*) data, priv->aoi_width, priv->aoi_height, priv->aoi_stride, priv->pixel_encoding_wchar, L"Mono16");
 		if (!check_error (err, "Could not convert buffer", error))
 			return FALSE;
+	}
+	else {
+		err = convert_and_concatenate_buffer (priv, buffer, data);
+		if (!check_error (err, "Could not convert buffer", error))
+			return FALSE;
+	}
 
 	/* Re-queue used buffer -> Useless in 'Fixed' cycle mode ... but as long as we flush out at both end and start of acquisition it does not matter */
+	if (priv->cycle_mode == UCA_ANDOR_CAMERA_CYCLE_MODE_CONTINUOUS) {
 		err=AT_QueueBuffer (priv->handle, buffer, size);
 		if (!check_error (err, "Could not queue new buffer", error))
 			return FALSE;
+	}
 
 	return TRUE;	
 }
@@ -943,60 +1262,167 @@ uca_andor_camera_set_property (GObject *object, guint property_id, const GValue 
                 priv->aoi_left = val_uint64;
             break;
         case PROP_ROI_Y:
-            val_uint = g_value_get_uint (value);
-            if (write_integer (priv, L"AOITop", val_uint))
-                priv->aoi_top = val_uint;
+	    if (!priv->vertically_centre_aoi) {		/* value writable only if this feature is not enabled */
+		    val_uint64 = g_value_get_uint (value);
+		    if (write_integer (priv, L"AOITop", val_uint64))
+		        priv->aoi_top = val_uint64;
+	    }
+	    else g_warning("Cannot modify 'ROI_y0' while 'vertically_centre_roi' is enabled");
             break;
-        case PROP_SENSOR_WIDTH:
-            val_uint = g_value_get_uint (value);
-            if (write_integer (priv, L"SensorWidth", val_uint))
-                priv->sensor_width = val_uint;
-            break;
-        case PROP_SENSOR_HEIGHT:
-            val_uint = g_value_get_uint (value);
-            if (write_integer (priv, L"SensorHeight", val_uint))
-                priv->sensor_height = val_uint;
-            break;
-        case PROP_SENSOR_PIXEL_WIDTH:
-            val_double = g_value_get_double (value);
-            if (write_double (priv, L"PixelWidth", val_double))
-                priv->pixel_width = val_double;
-            break;
-        case PROP_SENSOR_PIXEL_HEIGHT:
-            val_double = g_value_get_double (value);
-            if (write_double (priv, L"PixelHeight", val_double))
-                priv->pixel_height = val_double;
-            break;
-        case PROP_SENSOR_BITDEPTH:
-            break;
-#if 0
-        case PROP_TRIGGER_MODE:
-            val_enum = g_value_get_enum (value);
-            if (write_enum_index (priv, L"TriggerMode", val_enum))
-                priv->trigger_mode = val_enum;
-            break;
-#endif
+	case PROP_TRIGGER_SOURCE:			
+/* NOTE: Libuca's trigger_source enum and andor's TriggerMode enum are different -> need harcodded attribution
+ * WARNING : experimentally read enum on actual camera is different from definition in Andor's documentation :
+ *	| Index	| LIBUCA	| ANDOR DOC		| ACTUAL CAMERA				|
+ *	|-------|---------------|-----------------------|---------------------------------------|
+ *	| 0	| AUTO		| Internal		| Internal				|
+ *	| 1	| SOFTWARE	| Software		| External Level Transition		|
+ *	| 2	| EXTERNAL	| External		| External Start			|
+ *	| 3	| (not def.)	| External Start	| External Exposure			|
+ *	| 4	| (not def.)	| External Exposure	| Software				|
+ *	| 5	| (not def.)	| (not def.)		| Advanced				|
+ *	| 6	| (not def.)	| (not def.)		| External				|
+ */
+	    val_enum = g_value_get_enum (value);
+	    switch (val_enum) {
+		case UCA_CAMERA_TRIGGER_SOURCE_AUTO:				/* -> hardcodded attribution : _AUTO (0)	-> "Internal" (0) */
+			break;
+		case UCA_CAMERA_TRIGGER_SOURCE_SOFTWARE:
+			val_enum=4;						/* -> hardcodded attribution : _SOFTWARE (1)	-> "Software" (4) */
+			break;
+		case UCA_CAMERA_TRIGGER_SOURCE_EXTERNAL:
+			val_enum=6;						/* -> hardcodded attribution : _EXTERNAL (2)	-> "External" (6) */
+			break;
+		default:
+			g_warning("Invalid entry, trigger mode set to AUTO by default");
+			val_enum=0;						/* -> hardcodded attribution : (default)	-> "Internal" (0) */
+			break;
+	    }
+	    if (write_enum_index(priv, L"TriggerMode", val_enum))
+		    priv->trigger_mode = val_enum;
+	    break;
         case PROP_FRAMERATE:
             val_double = g_value_get_double (value);
-            if (write_double (priv, L"FrameRate", val_double))
-                priv->frame_rate = g_value_get_float (value);
+            write_double (priv, L"FrameRate", val_double);		/* No need to set priv->frame_rate: a callback already handle this */
             break;
         case PROP_TARGET_SENSOR_TEMPERATURE:
             val_double = g_value_get_double (value);
             if (write_double (priv, L"TargetSensorTemperature", val_double))
-                priv->target_sensor_temperature = val_double;
+                read_double (priv, L"TargetSensorTemperature", &priv->target_sensor_temperature);
             break;
         case PROP_FAN_SPEED:
-            val_enum = g_value_get_int (value);
+	    val_enum = g_value_get_enum (value);
             if (write_enum_index (priv, L"FanSpeed", val_enum))
                 priv->fan_speed = val_enum;
             break;
-        case PROP_CYCLE_MODE:
-            if (write_string (priv, L"CycleMode", g_value_get_string (value))) {
-                g_free (priv->cycle_mode);
-                priv->cycle_mode = g_value_dup_string (value);
-            }
+	case PROP_CYCLE_MODE:			
+            val_enum = g_value_get_enum(value);
+	    if (write_enum_index(priv, L"CycleMode",val_enum))
+		priv->cycle_mode = val_enum;
+		/* If cycle mode is Fixed, check if frame count is multiple of Accumulate count and if not change it to nearest */
+		if (priv->cycle_mode == UCA_ANDOR_CAMERA_CYCLE_MODE_FIXED) {
+		    if ((priv->frame_count % priv->accumulate_count) != 0) {
+			val_uint64 = (priv->frame_count / priv->accumulate_count) * priv->accumulate_count;
+			if (val_uint64 == 0)
+				val_uint64 = priv->accumulate_count;
+			if (write_integer (priv, L"FrameCount", val_uint64)) {
+				priv->frame_count = val_uint64;
+				g_message ("Value of frame count reset to: %d", (int) val_uint64);
+			}
+			else	g_warning ("Accumulate count has been changed without forcing frame count to be a multiple of this value,"
+					   " resulting in undefined behaviour");
+			}
+		}
+		break;
+	case PROP_SIMPLE_PRE_AMP_GAIN_CONTROL:	 /* handle pixel encoding and bit depth */
+	    val_enum = g_value_get_enum (value);
+	    if (write_enum_index(priv, L"SimplePreAmpGainControl", val_enum))
+		priv->simple_pre_amp_gain_control = val_enum;
+	    break;
+	case PROP_SHUTTERING_MODE:		
+	    val_enum = g_value_get_enum (value);
+	    if (write_enum_index(priv, L"ElectronicShutteringMode", val_enum))
+		priv->shuttering_mode = val_enum;
+	    break;
+	case PROP_FAST_AOI_FRAMERATE_ENABLE:	
+	    val_bool = g_value_get_boolean (value);
+	    if (write_boolean (priv, L"FastAOIFrameRateEnable", val_bool))
+		priv->fast_aoi_frame_rate_enable = val_bool;
+	    break;
+	case PROP_PIXEL_READOUT_RATE:		
+	    val_enum = g_value_get_enum (value);
+	    if (write_enum_index(priv, L"PixelReadoutRate", val_enum))
+		priv->pixel_readout_rate = val_enum;
+	    break;
+	case PROP_VERTICALLY_CENTRE_AOI:	
+	    val_bool = g_value_get_boolean (value);
+	    if (write_boolean (priv, L"VerticallyCentreAOI", val_bool))
+		priv->vertically_centre_aoi = val_bool;
+	    break;
+	case PROP_SENSOR_COOLING:		
+	    val_bool = g_value_get_boolean (value);
+	    if (write_boolean (priv, L"SensorCooling", val_bool))
+		priv->sensor_cooling = val_bool;
+	    break;
+	case PROP_SPURIOUS_NOISE_FILTER:	
+	    val_bool = g_value_get_boolean (value);
+	    if (write_boolean (priv, L"SpuriousNoiseFilter", val_bool))
+		priv->spurious_noise_filter = val_bool;
+	    break;
+	case PROP_STATIC_BLEMISH_CORRECTION:	
+	    val_bool = g_value_get_boolean (value);
+	    if (write_boolean (priv, L"StaticBlemishCorrection", val_bool))
+		priv->static_blemish_correction = val_bool;
+	    break;
+	case PROP_OVERLAP:			
+	    val_bool = g_value_get_boolean (value);
+	    if (write_boolean (priv, L"Overlap", val_bool))
+		priv->overlap = val_bool;
+	    break;
+	case PROP_AOI_BINNING:			
+	    val_enum = g_value_get_enum (value);
+	    if (write_enum_index(priv, L"AOIBinning", val_enum))
+		priv->aoi_binning = val_enum;
+	    break;
+	case PROP_NUM_BUFFERS:			
+	    val_uint64 = g_value_get_uint (value);
+	    if (val_uint64 < 1) {
+		g_warning ("value %d is out of range, value 1 has been set instead", (int) val_uint64);
+		val_uint64 = 1;
+	    }
+	    priv->num_buffers = val_uint64;
+	    break;
+        case PROP_FRAME_COUNT:			
+            val_uint64 = g_value_get_uint (value);
+  	    if ((val_uint64 % priv->accumulate_count) != 0) {		/* Force Frame count to be a multiple of accumulate count */
+		val_uint64 = (val_uint64 / priv->accumulate_count) * priv->accumulate_count;
+		if (val_uint64 == 0)
+			val_uint64 = priv->accumulate_count; 		/* If fraction, set to multiple = 1 */
+		g_warning("Value is not a multiple of accumulate count (%d): frame count set to %d instead", (int) priv->accumulate_count, (int) val_uint64);
+		}
+            if (write_integer (priv, L"FrameCount", val_uint64))
+                priv->frame_count = val_uint64;
             break;
+        case PROP_ACCUMULATE_COUNT:		
+            val_uint64 = g_value_get_uint (value);
+            if (write_integer (priv, L"AccumulateCount", val_uint64)) {
+                priv->accumulate_count = val_uint64;
+
+		/* Set as well frame count to the same value (frame count must always be a multiple of accumulate count) if cycle mode is Fixed */
+		if (priv->cycle_mode == UCA_ANDOR_CAMERA_CYCLE_MODE_FIXED) {
+			if (write_integer (priv, L"FrameCount", val_uint64)) {
+				priv->frame_count = val_uint64;
+				g_message ("Value of frame count reset to: %d", (int) val_uint64);
+			}
+			else	g_warning ("Accumulate count has been changed without forcing frame count to be a multiple of this value,"
+					   " resulting in undefined behaviour");
+		}
+	    }
+            break;
+	case PROP_METADATA:
+	    val_bool = g_value_get_boolean (value);
+	    if (write_boolean (priv, L"MetadataEnable", val_bool) && write_boolean (priv, L"MetadataTimestamp", val_bool))
+		priv->metadata = val_bool;
+	    break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
             break;
@@ -1055,25 +1481,54 @@ uca_andor_camera_get_property (GObject *object, guint property_id, GValue *value
                 g_value_set_double (value, val_double*1e-6);
             break;
         case PROP_SENSOR_BITDEPTH:
-            g_value_set_uint (value, 16);
-            break;
-#if 0
-        case PROP_TRIGGER_MODE:
-            if (read_enum_index (priv, L"TriggerMode", &val_enum))
+	   if (read_string (priv, L"BitDepth", &val_char)) {
+	   	val_uint64 = extract_uint_from_string (val_char);
+   	   	g_value_set_uint (value, val_uint64);
+    	   }
+           break;
+	case PROP_TRIGGER_SOURCE:
+/* NOTE: Libuca's trigger_source enum and andor's TriggerMode enum are different -> need harcodded attribution
+ * WARNING : experimentally read enum on actual camera is different from definition in Andor's documentation :
+ *	| Index	| LIBUCA	| ANDOR DOC		| ACTUAL CAMERA				|
+ *	|-------|---------------|-----------------------|---------------------------------------|
+ *	| 0	| AUTO		| Internal		| Internal				|
+ *	| 1	| SOFTWARE	| Software		| External Level Transition		|
+ *	| 2	| EXTERNAL	| External		| External Start			|
+ *	| 3	| (not def.)	| External Start	| External Exposure			|
+ *	| 4	| (not def.)	| External Exposure	| Software				|
+ *	| 5	| (not def.)	| (not def.)		| Advanced				|
+ *	| 6	| (not def.)	| (not def.)		| External				|
+ */
+            if (read_enum_index (priv, L"TriggerMode", &val_enum)) {
+		switch (val_enum) {		/* Hardcodded attribution (according to experimental readings on actual ANDOR NEO camera) */
+			case 0:			/* 'Internal' 	-> _AUTO 	*/
+				break;
+			case 6:			/* 'External'	-> _EXTERNAL	*/
+				val_enum=2;
+				break;
+			case 4:			/* 'Software'	-> _SOFTWARE	*/
+				val_enum=1;
+				break;
+			default:
+				g_warning ("Could not identify Trigger mode of index = %d ; 'Internal' value returned by default",val_enum);
+				val_enum = 0;	/* (default)	-> _AUTO	*/
+				break;
+		}
                 g_value_set_enum (value, val_enum);
-            break;
-#endif
+	    }
+	    break;
         case PROP_ROI_STRIDE:
             if (read_integer (priv, L"AOIStride", &val_uint64))
                 g_value_set_uint (value, val_uint64);
             break;
         case PROP_FRAMERATE:
             if (read_double (priv, L"FrameRate", &val_double))
-                g_value_set_float (value, (float) val_double);
+                g_value_set_double (value, val_double);
             break;
         case PROP_SENSOR_TEMPERATURE:
-            if (read_double (priv, L"SensorTemperature", &val_double))
-                g_value_set_double (value, val_double);
+	    /* Using priv->sensor_temperature instead val_double of because may change without any other feature of the camera (sensor cooling), so need to update */
+            if (read_double (priv, L"SensorTemperature", &priv->sensor_temperature)) 
+                g_value_set_double (value, priv->sensor_temperature);
             break;
         case PROP_TARGET_SENSOR_TEMPERATURE:
             if (read_double (priv, L"TargetSensorTemperature", &val_double))
@@ -1081,22 +1536,120 @@ uca_andor_camera_get_property (GObject *object, guint property_id, GValue *value
             break;
         case PROP_FAN_SPEED:
             if (read_enum_index (priv, L"FanSpeed", &val_enum))
-                g_value_set_int (value, val_enum);
+                g_value_set_enum (value, val_enum);
             break;
-        case PROP_CYCLE_MODE:
-            if (read_string (priv, L"CycleMode", &val_char)) {
+	case PROP_CYCLE_MODE:
+            if (read_enum_index(priv, L"CycleMode", &val_enum)) {
+		g_value_set_enum (value, val_enum);
+		break;
+	    }
+        case PROP_IS_RECORDING:
+	    if (read_boolean(priv,L"CameraAcquiring",&val_bool))
+           	 g_value_set_boolean (value, val_bool);
+            break;
+        case PROP_HAS_CAMRAM_RECORDING:			
+            g_value_set_boolean (value, FALSE);
+            break;
+        case PROP_HAS_STREAMING:			
+            g_value_set_boolean (value, TRUE);
+            break;
+
+        case PROP_PIXEL_ENCODING:				
+            if (read_string (priv, L"PixelEncoding", &val_char)) {	
                 g_value_set_string (value, val_char);
                 g_free (val_char);
             }
             break;
-        case PROP_IS_RECORDING:
-            g_value_set_boolean (value, priv->is_cam_acquiring);
+	case PROP_SIMPLE_PRE_AMP_GAIN_CONTROL:				
+            if (read_enum_index (priv, L"SimplePreAmpGainControl", &val_enum)) {
+                g_value_set_enum (value, val_enum);
+            }	    
+	    break;
+	case PROP_SHUTTERING_MODE:					
+            if (read_enum_index (priv, L"ElectronicShutteringMode", &val_enum)) {
+                g_value_set_enum (value, val_enum);
+            }	    
+	    break;
+        case PROP_FRAMERATE_MAX:					
+            if (read_double_max (priv, L"FrameRate", &val_double))
+                g_value_set_double (value, val_double);
             break;
-        case PROP_HAS_CAMRAM_RECORDING:
-            g_value_set_boolean (value, FALSE);
+        case PROP_FRAMERATE_MIN:					
+            if (read_double_min (priv, L"FrameRate", &val_double))
+                g_value_set_double (value, val_double);
             break;
-        case PROP_HAS_STREAMING:
-            g_value_set_boolean (value, TRUE);
+	case PROP_MAX_INTERFACE_TRANSFER_RATE:				
+            if (read_double (priv, L"MaxInterfaceTransferRate", &val_double))
+                g_value_set_double (value, val_double);
+            break;
+        case PROP_IMAGE_SIZE:						
+            if (read_integer (priv, L"ImageSizeBytes", &val_uint64))
+                g_value_set_int64 (value, val_uint64);
+            break;
+        case PROP_MAX_FRAME_CAPACITY:
+	    estimate_max_frame_capacity	(priv);				
+	    g_value_set_int (value, priv->max_frame_capacity);
+            break;
+    	case PROP_FAST_AOI_FRAMERATE_ENABLE:
+	    if (read_boolean (priv, L"FastAOIFrameRateEnable", &val_bool))			
+            	g_value_set_boolean (value, val_bool);
+            break;
+	case PROP_PIXEL_READOUT_RATE:					
+            if (read_enum_index (priv, L"PixelReadoutRate", &val_enum))
+                g_value_set_enum (value, val_enum);
+	    break;
+    	case PROP_VERTICALLY_CENTRE_AOI:				
+	    if (read_boolean (priv, L"VerticallyCentreAOI", &val_bool))
+            g_value_set_boolean (value, val_bool);
+            break;
+    	case PROP_SENSOR_COOLING:					
+	    if (read_boolean (priv, L"SensorCooling", &val_bool))
+            g_value_set_boolean (value, val_bool);
+            break;
+        case PROP_TEMPERATURE_STATUS:
+	    /* Using priv->temperature_status instead of val_char because may change without any other feature so need to update */
+            if (read_string (priv, L"TemperatureStatus", &priv->temperature_status)) {	
+                g_value_set_string (value, priv->temperature_status);
+            }
+            break;
+    	case PROP_SPURIOUS_NOISE_FILTER:				
+	    if (read_boolean (priv, L"SpuriousNoiseFilter", &val_bool))
+            g_value_set_boolean (value, val_bool);
+            break;
+    	case PROP_STATIC_BLEMISH_CORRECTION:				
+	    if (read_boolean (priv, L"StaticBlemishCorrection", &val_bool))
+            g_value_set_boolean (value, val_bool);
+            break;
+    	case PROP_OVERLAP:						
+	    if (read_boolean (priv, L"Overlap", &val_bool))
+            g_value_set_boolean (value, val_bool);
+            break;
+	case PROP_AOI_BINNING:						
+            if (read_enum_index (priv, L"AOIBinning", &val_enum))
+                g_value_set_enum (value, val_enum);
+	    break;
+	case PROP_NUM_BUFFERS:						
+	    g_value_set_uint (value, priv->num_buffers);
+	    break;
+        case PROP_FRAME_COUNT:						
+            if (read_integer (priv, L"FrameCount", &val_uint64))
+                g_value_set_uint (value, val_uint64);
+            break;
+        case PROP_ACCUMULATE_COUNT:					
+            if (read_integer (priv, L"AccumulateCount", &val_uint64))
+                g_value_set_uint (value, val_uint64);
+            break;
+        case PROP_TIMESTAMP_CLOCK:					
+            if (read_integer (priv, L"TimestampClock", &val_uint64))
+                g_value_set_uint64 (value, val_uint64);
+            break;        
+	case PROP_TIMESTAMP_CLOCK_FREQUENCY:				
+            if (read_integer (priv, L"TimestampClockFrequency", &val_uint64))
+                g_value_set_uint64 (value, val_uint64);
+            break;
+    	case PROP_METADATA:						
+	    if (read_boolean (priv, L"MetadataEnable", &val_bool))
+            g_value_set_boolean (value, val_bool);
             break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
@@ -1145,6 +1698,32 @@ uca_andor_camera_finalize (GObject *object)
 	error_number = AT_UnregisterFeatureCallback(priv->handle, L"PixelEncoding", watch_for_PixelEncoding, (void *) priv);				
 	if (error_number) g_error ("Could not unregister PixelEncoding Callback: %s (%d)", identify_andor_error(error_number), error_number);	
 
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"BitDepth", watch_for_BitDepth, (void *) priv);					
+	if (error_number) g_error ("Could not unregister BitDepth Callback: %s (%d)", identify_andor_error(error_number), error_number);		
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"AOIStride", watch_for_AOIStride, (void *) priv);					
+	if (error_number) g_error ("Could not unregister AOIStride Callback: %s (%d)", identify_andor_error(error_number), error_number);	
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"FrameRate", watch_for_FrameRate, (void *) priv);					
+	if (error_number) g_error ("Could not unregister FrameRate Callback: %s (%d)", identify_andor_error(error_number), error_number);	
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"MaxInterfaceTransferRate", watch_for_MaxInterfaceTransferRate, (void *) priv);	
+	if (error_number) g_error ("Could not unregister MaxInterfaceTransferRate Callback: %s (%d)", identify_andor_error(error_number), error_number);	
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"ImageSizeBytes", watch_for_ImageSizeBytes, (void *) priv);				
+	if (error_number) g_error ("Could not unregister ImageSizeBytes Callback: %s (%d)", identify_andor_error(error_number), error_number);	
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"TemperatureStatus", watch_for_Temperature, (void *) priv); 				
+	if (error_number) g_error ("Could not unregister TemperatureStatus Callback: %s (%d)", identify_andor_error(error_number), error_number);
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"AOIBinning", watch_for_AOIBinning, (void *) priv);	 				
+	if (error_number) g_error ("Could not unregister AOIBinning Callback: %s (%d)", identify_andor_error(error_number), error_number);
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"CameraAcquiring", watch_for_CameraAcquiring, (void *) priv);	 		
+	if (error_number) g_error ("Could not unregister CameraAcquiring Callback: %s (%d)", identify_andor_error(error_number), error_number);
+
+	error_number = AT_UnregisterFeatureCallback(priv->handle, L"CameraPresent", watch_for_CameraPresent, (void *) priv);	 			
+	if (error_number) g_error ("Could not unregister CameraPresent Callback: %s (%d)", identify_andor_error(error_number), error_number);
     }
 
     if (AT_Close (priv->handle) != AT_SUCCESS)
@@ -1169,6 +1748,12 @@ uca_andor_camera_finalize (GObject *object)
 static void
 uca_andor_camera_trigger (UcaCamera *camera, GError **error)
 {
+    	UcaAndorCameraPrivate *priv;				
+    	g_return_if_fail (UCA_IS_ANDOR_CAMERA(camera));		
+    	priv = UCA_ANDOR_CAMERA_GET_PRIVATE (camera);		
+
+	check_error (AT_Command (priv->handle, L"SoftwareTrigger"), "Could not Trigger (Software)", error);
+	return;							
 }
 
 static void
@@ -1210,26 +1795,181 @@ uca_andor_camera_class_init (UcaAndorCameraClass *klass)
                 -100.0, 100.0, 20.0,
                 G_PARAM_READWRITE);
 
-    andor_properties [PROP_FAN_SPEED] =
-        g_param_spec_int ("fan-speed",
+    andor_properties [PROP_FAN_SPEED] =				
+        g_param_spec_enum ("fan-speed",
                 "fan-speed",
                 "The speed by which the fan is rotating",
-                -100, 100, 0,
+                UCA_TYPE_ANDOR_CAMERA_FAN_SPEED, UCA_ANDOR_CAMERA_FAN_SPEED_ON,
                 G_PARAM_READWRITE);
 
-    andor_properties [PROP_CYCLE_MODE] =
-        g_param_spec_string ("cycle-mode",
+    andor_properties [PROP_CYCLE_MODE] =			
+        g_param_spec_enum ("cycle-mode",
                 "cylce mode",
                 "The currently used cycle mode for the acquisition",
-                "F",
+                UCA_TYPE_ANDOR_CAMERA_CYCLE_MODE, UCA_ANDOR_CAMERA_CYCLE_MODE_FIXED,
                 G_PARAM_READWRITE);
 
-    andor_properties [PROP_FRAMERATE] =
-        g_param_spec_float ("frame-rate",
+    andor_properties [PROP_FRAMERATE] =				
+        g_param_spec_double ("frame-rate",
                 "frame rate",
                 "The current frame rate of the camera",
-                1.0f, 100.0f, 100.0f,
+                0.0001, 100.0, 30.0,
                 G_PARAM_READWRITE);
+
+    andor_properties [PROP_PIXEL_ENCODING] =				
+        g_param_spec_string ("pixel-encoding",
+                "pixel encoding",
+                "The currently used pixel encoding of the camera",
+                "(Default)",
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_SIMPLE_PRE_AMP_GAIN_CONTROL] =	
+        g_param_spec_enum ("Simple-pre-amp-gain-control",
+                "Simple pre amp gain control",
+                "Wrapped feature to handle pixel encoding and bit depth",
+                UCA_TYPE_ANDOR_CAMERA_SPAGC, UCA_ANDOR_CAMERA_SPAGC_11BIT_LOW_NOISE,
+                G_PARAM_READWRITE);
+
+    andor_properties [PROP_SHUTTERING_MODE] =			
+        g_param_spec_enum ("Electronic-shutter-mode",
+                "Electronic shutter mode",
+                "The current electronic shutter mode",
+                UCA_TYPE_ANDOR_CAMERA_SHUTTERING_MODE, UCA_ANDOR_CAMERA_SHUTTERING_MODE_ROLLING,
+                G_PARAM_READWRITE);
+
+    andor_properties [PROP_FRAMERATE_MAX] =			
+        g_param_spec_double ("frame-rate-max",
+                "frame rate max",
+                "Maximum frame rate with current parameters",
+                1.0, 100.0, 100.0,
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_FRAMERATE_MIN] =			
+        g_param_spec_double ("frame-rate-min",
+                "frame rate min",
+                "Minimum frame rate with current parameters",
+                1.0, 100.0, 100.0,
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_MAX_INTERFACE_TRANSFER_RATE] =	
+        g_param_spec_double ("max-interface-transfer-rate",
+                "max interface transfer rate",
+                "Maximum transfer rate in 'normal' mode (above, switches to 'burst' mode)",
+                1.0, 100.0, 100.0,
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_IMAGE_SIZE] =			
+        g_param_spec_int64 ("image-size",
+                "image size (bytes)",
+                "Current image size in Bytes with current parameters including padding and metadata",
+                0, G_MAXINT64, 0,
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_MAX_FRAME_CAPACITY] =		
+        g_param_spec_int ("max-frame-capacity",
+                "max frame capacity",
+                "Max frame number that can be stored in internal memory at frame_rate_max"
+		" if frame_rate_max > max_interface_transfer_rate",
+                0, G_MAXINT, 0,
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_FAST_AOI_FRAMERATE_ENABLE] =		
+	g_param_spec_boolean ("fast-roi-frame-rate-enable",
+		"fast roi frame rate enable",
+		"Is the camera able to record faster if small ROI",
+		FALSE,
+		G_PARAM_READWRITE);
+
+    andor_properties [PROP_PIXEL_READOUT_RATE] =		
+        g_param_spec_enum ("pixel-readout-rate",
+                "pixel readout rate",
+                "The current pixel readout rate",
+                UCA_TYPE_ANDOR_CAMERA_PIXEL_READOUT_RATE, UCA_ANDOR_CAMERA_PIXEL_READOUT_RATE_280MHZ,
+                G_PARAM_READWRITE);
+
+    andor_properties [PROP_VERTICALLY_CENTRE_AOI] =		
+	g_param_spec_boolean ("vertically-centre-roi",
+		"vertically centre roi",
+		"Is ROI vertically centered",
+		FALSE,
+		G_PARAM_READWRITE);
+
+    andor_properties [PROP_SENSOR_COOLING] =			
+	g_param_spec_boolean ("sensor-cooling",
+		"sensor cooling",
+		"Is the sensor's cooling enabled",
+		FALSE,
+		G_PARAM_READWRITE);
+
+    andor_properties [PROP_TEMPERATURE_STATUS] =			
+        g_param_spec_string ("temperature-status",
+                "temperature status",
+                "The current temperature status",
+                "(Default)",
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_SPURIOUS_NOISE_FILTER] =		
+	g_param_spec_boolean ("spurious-noise-filter",
+		"spurious noise filter",
+		"Is the spurious noise filter enabled",
+		FALSE,
+		G_PARAM_READWRITE);
+
+    andor_properties [PROP_STATIC_BLEMISH_CORRECTION] =		
+	g_param_spec_boolean ("static-blemish-correction",
+		"static blemish correction",
+		"Is the static blemish correction enabled",
+		FALSE,
+		G_PARAM_READWRITE);
+
+    andor_properties [PROP_OVERLAP] =				
+	g_param_spec_boolean ("overlap",
+		"overlap",
+		"Is the overlap readout mode enabled",
+		FALSE,
+		G_PARAM_READWRITE);
+
+    andor_properties [PROP_AOI_BINNING] =			
+        g_param_spec_enum ("roi-binning",
+                "roi binning",
+                "The current aoi (roi) binning",
+                UCA_TYPE_ANDOR_CAMERA_AOI_BINNING, UCA_ANDOR_CAMERA_AOI_BINNING_1X1,
+                G_PARAM_READWRITE);
+
+    andor_properties [PROP_FRAME_COUNT] =			
+        g_param_spec_uint ("frame-count",
+                "frame count",
+                "Number of images to acquire in sequence (if cycle mode = Fixed). Must be a multiple of accumulate count",
+                0,G_MAXINT, 1,
+                G_PARAM_READWRITE);
+
+    andor_properties [PROP_ACCUMULATE_COUNT] =			
+        g_param_spec_uint ("accumulate-count",
+                "accumulate count",
+                "Number of frames that should be summed to obtain each image in sequence (if cycle mode = Fixed)",
+                0,G_MAXINT, 1,
+                G_PARAM_READWRITE);
+
+    andor_properties [PROP_TIMESTAMP_CLOCK] =
+        g_param_spec_uint64 ("timestamp clock",
+                "timestamp clock",
+                "Current value of camera's internal timestamp clock",
+                0,G_MAXUINT64, 1,
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_TIMESTAMP_CLOCK_FREQUENCY] =
+        g_param_spec_uint64 ("timestamp-clock-frequency",
+                "timestamp clock frequency",
+                "Frequency of the camera's internal timestamp clock in Hz",
+                0,G_MAXUINT64, 1,
+                G_PARAM_READABLE);
+
+    andor_properties [PROP_METADATA] =				
+	g_param_spec_boolean ("metadata",
+		"metadata",
+		"Is the metadata (adding frame number and timestamp clock) enabled",
+		FALSE,
+		G_PARAM_READWRITE);
 
     for (guint id = N_BASE_PROPERTIES; id < N_PROPERTIES; id++)
         g_object_class_install_property (oclass, id, andor_properties [id]);
@@ -1243,9 +1983,9 @@ uca_andor_camera_init (UcaAndorCamera *self)
     UcaAndorCameraPrivate *priv;
     AT_H handle;
     AT_WC *model;
-    AT_BOOL cam_acq;
     GError **error;
     int error_number;
+    int TempInt;
 
     self->priv = priv = UCA_ANDOR_CAMERA_GET_PRIVATE (self);
     priv->construct_error = NULL;
@@ -1320,36 +2060,151 @@ uca_andor_camera_init (UcaAndorCamera *self)
     error_number = AT_GetFloat (handle, L"PixelHeight", &priv->pixel_height);
     if (!check_error (error_number, "Cannot read PixelHeight", error)) return;
 
-    error_number = AT_GetEnumIndex (handle, L"TriggerMode", &priv->trigger_mode);
+    error_number = AT_GetEnumIndex (handle, L"TriggerMode", (int *) &priv->trigger_mode);			
     if (!check_error (error_number, "Cannot read TriggerMode", error)) return;
 
-    error_number = AT_GetFloat (handle, L"FrameRate", &priv->frame_rate);
-    if (!check_error (error_number, "Cannot read FrameRate", error)) return;
-
-    error_number = AT_GetFloat (handle, L"SensorTemperature", &priv->sensor_temperature);
+    error_number = AT_GetFloat (handle, L"SensorTemperature", &priv->sensor_temperature);		
     if (!check_error (error_number, "Cannot read SensorTemperature", error)) return;
 
-    error_number = AT_GetFloat (handle, L"TargetSensorTemperature", &priv->target_sensor_temperature);
+    error_number = AT_GetFloat (handle, L"TargetSensorTemperature", &priv->target_sensor_temperature);		
     if (!check_error (error_number, "Cannot read TargetSensorTemperature", error)) return;
 
-    error_number = AT_GetEnumIndex (handle, L"FanSpeed", &priv->fan_speed);
+    error_number = AT_GetEnumIndex (handle, L"FanSpeed", (int *) &priv->fan_speed);				
     if (!check_error (error_number, "Cannot read FanSpeed", error)) return;
 
-    priv->cycle_mode = NULL;
+    error_number = AT_GetEnumIndex (handle, L"CycleMode", (int *) &priv->cycle_mode);				
+    if (!check_error (error_number, "Cannot read CycleMode", error)) return;
 
-    error_number = AT_GetBool (handle, L"CameraAcquiring", &cam_acq);
+    error_number = AT_GetBool (handle, L"CameraAcquiring", &priv->is_cam_acquiring);
     if (!check_error (error_number, "Cannot read CameraAcquiring", error)) return;
-    priv->is_cam_acquiring = (gboolean) cam_acq;
 
-    uca_camera_register_unit (UCA_CAMERA (self), "frame-rate", UCA_UNIT_COUNT);
+    error_number = AT_GetEnumIndex (handle, L"PixelEncoding", &TempInt);					
+    if (!check_error (error_number, "Cannot read PixelEncoding", error)) {return;}
+    else { read_string (priv, L"PixelEncoding", &priv->pixel_encoding); }
+
+    error_number = AT_GetFloat (handle, L"BytesPerPixel", &priv->calculated_bytes_per_pixel);			
+    if (!check_error (error_number, "BytesPerPixel", error)) return;
+
+    error_number = AT_GetInt (handle, L"ImageSizeBytes", &priv->image_size);					
+    if (!check_error (error_number, "Cannot read ImageSizeBytes", error)) return;
+
+    error_number = AT_GetEnumIndex (handle, L"ElectronicShutteringMode", (int *) &priv->shuttering_mode);	
+    if (!check_error (error_number, "Cannot read ElectronicShutteringMode", error)) return;
+
+    error_number = AT_GetFloat (handle, L"FrameRate", &priv->frame_rate);					
+    if (!check_error (error_number, "Cannot read FrameRate", error)) return;
+		
+    error_number = AT_GetFloatMax (handle, L"FrameRate", &priv->frame_rate_max);				
+    if (!check_error (error_number, "Cannot read FrameRate max", error)) return;
+
+    error_number = AT_GetFloatMin (handle, L"FrameRate", &priv->frame_rate_min);				
+    if (!check_error (error_number, "Cannot read FrameRate min", error)) return;
+
+    estimate_max_frame_capacity(priv);										
+
+    error_number = AT_GetFloat (handle, L"BytesPerPixel", &priv->calculated_bytes_per_pixel);			
+    if (!check_error (error_number, "Cannot read BytesPerPixel", error)) return;
+
+    error_number = AT_GetEnumIndex (handle, L"PixelReadoutRate", (int *) &priv->pixel_readout_rate);		
+    if (!check_error (error_number, "Cannot read PixelReadoutRate", error)) return;
+
+    error_number = AT_GetBool (handle, L"SensorCooling", &priv->sensor_cooling);				
+    if (!check_error (error_number, "Cannot read SensorCooling", error)) return;
+
+    error_number = AT_GetInt (handle, L"FrameCount", (AT_64*) &priv->frame_count);				
+    if (!check_error (error_number, "Cannot read FrameCount", error)) return;
+
+    priv->num_buffers = 4;	/* Value by default in libuca */
 
     if (!priv->is_sim_cam) {	/* Features and Callbacks only implemented on actual camera and not on SIMCAM */
+	error_number = AT_GetBool (handle, L"FullAOIControl", &priv->full_aoi_control);					
+	if (!check_error (error_number, "Cannot read FullAOIControl", error)) return;
+
+	error_number = AT_GetBool (handle, L"VerticallyCentreAOI", &priv->vertically_centre_aoi);			
+	if (!check_error (error_number, "Cannot read VerticallyCentreAOI", error)) return;
+
+	error_number = AT_GetEnumIndex (handle, L"BitDepth", &TempInt);							
+	if (!check_error (error_number, "Cannot read BitDepth", error)) {return;}
+	else { read_string (priv, L"BitDepth", &priv->bitdepth); }
+
+	error_number = AT_GetEnumIndex (handle, L"SimplePreAmpGainControl", (int *) &priv->simple_pre_amp_gain_control);	
+	if (!check_error (error_number, "Cannot read SimplePreAmpGainControl", error)) return;
+
+	error_number = AT_GetFloat (handle, L"MaxInterfaceTransferRate", &priv->max_interface_transfer_rate);		
+	if (!check_error (error_number, "Cannot read MaxInterfaceTransferRate", error)) return;
+
+	error_number = AT_SetFloat (handle, L"FrameRate",  (double) (priv->max_interface_transfer_rate - MARGIN));	
+	if (!check_error (error_number, "Cannot set FrameRate to MaxInterfaceTransferRate", error)) return;
+
+	error_number = AT_GetBool (handle, L"FastAOIFrameRateEnable", &priv->fast_aoi_frame_rate_enable);		
+	if (!check_error (error_number, "Cannot read FastAOIFrameRateEnable", error)) return;
+
+	error_number = AT_GetEnumIndex (handle, L"TemperatureStatus", &TempInt);					
+	if (!check_error (error_number, "Cannot read TemperatureStatus", error)) {return;}
+	else { read_string (priv, L"TemperatureStatus", &priv->temperature_status); }
+
+	error_number = AT_GetBool (handle, L"SpuriousNoiseFilter", &priv->spurious_noise_filter);			
+	if (!check_error (error_number, "Cannot read SpuriousNoiseFilter", error)) return;
+
+	error_number = AT_GetBool (handle, L"StaticBlemishCorrection", &priv->static_blemish_correction);		
+	if (!check_error (error_number, "Cannot read StaticBlemishCorrection", error)) return;
+
+	error_number = AT_GetBool (handle, L"Overlap", &priv->overlap);							
+	if (!check_error (error_number, "Cannot read Overlap", error)) return;
+
+	error_number = AT_GetEnumIndex (handle, L"AOIBinning", (int *) &priv->aoi_binning);				
+	if (!check_error (error_number, "Cannot read AOIBinning", error)) {return;}
+
+	error_number = AT_GetInt (handle, L"AccumulateCount", (AT_64 *) &priv->accumulate_count);			
+	if (!check_error (error_number, "Cannot read AccumulateCount", error)) return;
+
+	error_number = AT_GetInt (handle, L"TimestampClock", (AT_64 *) &priv->timestamp_clock);				
+	if (!check_error (error_number, "Cannot read TimestampClock", error)) return;
+
+	error_number = AT_GetInt (handle, L"TimestampClockfrequency", (AT_64 *) &priv->timestamp_clock_frequency);	
+	if (!check_error (error_number, "Cannot read TimestampClockFrequency", error)) return;
+
+	error_number = AT_GetBool (handle, L"MetadataEnable", &priv->metadata);							
+	if (!check_error (error_number, "Cannot read MetadataEnable", error)) return;
 
 	/*  CALLBACKS registration (initialisations) */
 	error_number = AT_RegisterFeatureCallback(handle, L"PixelEncoding", watch_for_PixelEncoding, (void *) priv);	
 	if (!check_error (error_number, "Could not register PixelEncoding Callback", error)) return;
+
+	error_number = AT_RegisterFeatureCallback(handle, L"BitDepth", watch_for_BitDepth, (void *) priv);		
+	if (!check_error (error_number, "Could not register BitDepth Callback", error)) return;
+
+	error_number = AT_RegisterFeatureCallback(handle, L"AOIStride", watch_for_AOIStride, (void *) priv);		
+	if (!check_error (error_number, "Could not register AOIStride Callback", error)) return;
+
+	error_number = AT_RegisterFeatureCallback(handle, L"FrameRate", watch_for_FrameRate, (void *) priv);		
+	if (!check_error (error_number, "Could not register FrameRate Callback", error)) return;
+
+	error_number = AT_RegisterFeatureCallback(handle, L"MaxInterfaceTransferRate", watch_for_MaxInterfaceTransferRate, (void *) priv); 
+	if (!check_error (error_number, "Could not register MaxInterfaceTransferRate Callback", error)) return;
+
+	error_number = AT_RegisterFeatureCallback(handle, L"ImageSizeBytes", watch_for_ImageSizeBytes, (void *) priv);	
+	if (!check_error (error_number, "Could not register ImageSizeBytes Callback", error)) return;
+
+	error_number = AT_RegisterFeatureCallback(handle, L"TemperatureStatus", watch_for_Temperature, (void *) priv);	
+	if (!check_error (error_number, "Could not register TemperatureStatus Callback", error)) return;	
+
+	error_number = AT_RegisterFeatureCallback(handle, L"AOIBinning", watch_for_AOIBinning, (void *) priv);		
+	if (!check_error (error_number, "Could not register AOIBinning Callback", error)) return;	
+
+	error_number = AT_RegisterFeatureCallback(handle, L"CameraAcquiring", watch_for_CameraAcquiring, (void *) priv);
+	if (!check_error (error_number, "Could not register CameraAcquiring Callback", error)) return;
+
+	error_number = AT_RegisterFeatureCallback(handle, L"CameraPresent", watch_for_CameraPresent, (void *) priv);	
+	if (!check_error (error_number, "Could not register CameraPresent Callback", error)) return;
+
+	error_number = AT_SetBool (handle, L"MetadataTimestamp", TRUE);
+	if (!check_error (error_number, "Could not enable METADATA", error)) return;
     }
 							
+    /* Uca Units attribution (all properties that does not match the UcaUnit enum are just ignored...) */
+    uca_camera_register_unit (UCA_CAMERA (self), "sensor-temperature", UCA_UNIT_DEGREE_CELSIUS); 	
+    uca_camera_register_unit (UCA_CAMERA (self), "target-sensor-temperature", UCA_UNIT_DEGREE_CELSIUS); 
 
     g_free (model);
     g_free (modelchar);
