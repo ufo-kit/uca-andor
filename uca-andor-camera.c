@@ -51,7 +51,6 @@ static void uca_andor_initable_iface_init(GInitableIface *iface);
 G_DEFINE_TYPE_WITH_CODE (UcaAndorCamera, uca_andor_camera, UCA_TYPE_CAMERA,
                          G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, uca_andor_initable_iface_init))
 
-#define TIMEBASE_INVALID        0xDEAD
 #define WAIT_BUFFER_TIMEOUT	10000 		/* Time allowed for the camera to return buffer before raising error; original = 10000 (10s) */
 #define MARGIN			0.01		/* Framerate margin used when setting framerate at max transfer rate (frame_rate = max_interface_transfer_rate - MARGIN) */
 #define INTERNAL_MEMORY		3981262199	/* Estimated memory according to experimental tests made on actual camera (should be 4GB) */
