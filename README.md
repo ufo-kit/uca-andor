@@ -2,8 +2,7 @@
 
 Andor SDK plugin for [libuca](https://github.com/ufo-kit/libuca).
 
-### SDK installation Makefile
+### SDK + libuca + uca-andor installation procedure
 
-For a more standards-compliant installation procedure of the Andor SDK, please
-use the `etc/Makefile` in the extracted Andor SDK tarball directory. Adapt
-`DESTDIR`, `PREFIX` etc. to your liking.
+Please see `Libuca_Andor_Installation_Instruction.txt` in the 
+extracted Andor SDK tarball directory. 
