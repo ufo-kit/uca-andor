@@ -872,7 +872,6 @@ check_error (int error_number, const char* message, GError **error)
     return TRUE;
 }
 
-
 int
 AT_EXP_CONV watch_for_PixelEncoding (AT_H Handle, const AT_WC* Feature, void* Context)
 /**
@@ -962,15 +961,12 @@ AT_EXP_CONV watch_for_MaxInterfaceTransferRate (AT_H Handle, const AT_WC* Featur
  */
 {
     UcaAndorCameraPrivate *priv = Context;
-    gboolean val_bool;
 
     read_double (priv, L"MaxInterfaceTransferRate", &priv->max_interface_transfer_rate);
     read_double_max (priv, L"FrameRate", &priv->frame_rate_max);
     estimate_max_frame_capacity(priv);
 
-    val_bool = check_access (priv, L"FrameRate", CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN);
-
-    if (val_bool) {
+    if (check_access (priv, L"FrameRate", CHECK_ACCESS_WRITE, CHECK_ACCESS_WARN)) {
         if (priv->max_interface_transfer_rate <= priv->frame_rate_max) {
             if(!write_double (priv, L"FrameRate", (priv->max_interface_transfer_rate - MARGIN)))
                 g_warning("Maximum transfer rate has been modified but frame rate has not been update, "
@@ -1092,9 +1088,9 @@ uca_andor_camera_start_recording (UcaCamera *camera, GError **error)
     if (priv->image_buffer != NULL)
         g_free (priv->image_buffer);
 
-    priv->image_buffer = g_malloc0 (    (priv->cycle_mode)   * (priv->num_buffers * priv->image_size + 8) * sizeof (gchar) /* case cycle mode = continous */
-                      +    (1-priv->cycle_mode) * (priv->frame_count * priv->image_size + 8) * sizeof (gchar) /* case cycle mode = fixed */
-                   );
+    priv->image_buffer = g_malloc0 ((priv->cycle_mode) *
+            (priv->num_buffers * priv->image_size + 8) * sizeof (gchar) +   /* case cycle mode = continous */
+            (1 - priv->cycle_mode) * (priv->frame_count * priv->image_size + 8) * sizeof (gchar));    /* case cycle mode = fixed */
     priv->aligned_buffer = (AT_U8*) (((unsigned long) priv->image_buffer + 7) & ~0x7);    /* 8 Bytes alignment */
 
     if (!check_error (AT_Flush (priv->handle), "Could not flush out remaining queued buffers", error))
