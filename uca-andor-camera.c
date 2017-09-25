@@ -233,160 +233,77 @@ enum {
 
 static GParamSpec *andor_properties [N_PROPERTIES] = { NULL, };
 
-static gchar*
-identify_andor_error (int error)
 /**
- * Return a string containing the error corresponding to the error number returned from andor camera
- * The following 'switch' matches the defined AT errors in the SDK's file 'atcore.h' and in the documentation
+ * Return a string containing the error corresponding to the error number
+ * returned from andor camera. The array matches the AT errors defined in the
+ * SDK's file 'atcore.h' and in the documentation.
  */
+static const gchar *
+identify_andor_error (int error)
 {
-    gchar* string;
-    switch (error) {
+    static const gchar *errors[] = {
         /* atcore.h errors */
-        case 0:
-            string = "No error ... (identify_andor_error function has been called for a bad reason, please fix)";
-            break;
-        case 1:
-            string = "Camera Handle uninitialized";
-            break;
-        case 2:
-            string = "Feature is not implemented for this camera";
-            break;
-        case 3:
-            string = "Feature is read only";
-            break;
-        case 4:
-            string = "Feature is currently not readable";
-            break;
-        case 5:
-            string = "Feature is currently not writable / Command is not currently executable";
-            break;
-        case 6:
-            string = "Value is either out of range or unavailable";
-            break;
-        case 7:
-            string = "Index is currently not available";
-            break;
-        case 8:
-            string = "Index is not implemented on this camera";
-            break;
-        case 9:
-            string = "String value exceed maximum allowed length";
-            break;
-        case 10:
-            string = "Connection or Disconnection error";
-            break;
-        case 11:
-            string = "No Internal Event or Internal Error";
-            break;
-        case 12:
-            string = "Invalid handle";
-            break;
-        case 13:
-            string = "Waiting for buffer timed out";
-            break;
-        case 14:
-            string = "Input buffer queue reached maximum capacity";
-            break;
-        case 15:
-            string = "Queued buffer / returned frame size conflict";
-            break;
-        case 16:
-            string = "A queued buffer was not aligned on an 8-byte boundary";
-            break;
-        case 17:
-            string = "An error has occurred while communicating with hardware";
-            break;
-        case 18:
-            string = "Index / String is not currently available";
-            break;
-        case 19:
-            string = "Index / String is not implemented on this camera";
-            break;
-        case 20:
-            string = "Passed feature = NULL";
-            break;
-        case 21:
-            string = "Passed handle = NULL";
-            break;
-        case 22:
-            string = "Feature not implemented";
-            break;
-        case 23:
-            string = "Readable not set";
-            break;
-        case 24:
-            string = "Readonly not set";
-            break;
-        case 25:
-            string = "Writable not set";
-            break;
-        case 26:
-            string = "Min value = NULL";
-            break;
-        case 27:
-            string = "Max value = NULL";
-            break;
-        case 28:
-            string = "Function returned NULL value";
-            break;
-        case 29:
-            string = "Function returned NULL string";
-            break;
-        case 30:
-            string = "Feature index count = NULL";
-            break;
-        case 31:
-            string = "Available not set";
-            break;
-        case 32:
-            string = "Passed string lenght = NULL";
-            break;
-        case 33:
-            string = "EvCallBack parameter = NULL";
-            break;
-        case 34:
-            string = "Pointer to queue = NULL";
-            break;
-        case 35:
-            string = "Wait pointer = NULL";
-            break;
-        case 36:
-            string = "Pointer size = NULL";
-            break;
-        case 37:
-            string = "No memory allocated for current action";
-            break;
-        case 38:
-            string = "Unable to connect, device already in use";
-            break;
-        case 39:
-            string = "Device not found";
-            break;
-        case 100:
-            string = "The software was not able to retrieve data from the card or camera fast enough to avoid the internal hardware buffer bursting";
-            break;
+        "No error ... (identify_andor_error function has been called for a bad reason, please fix)",
+        "Camera Handle uninitialized",
+        "Feature is not implemented for this camera",
+        "Feature is read only",
+        "Feature is currently not readable",
+        "Feature is currently not writable / Command is not currently executable",
+        "Value is either out of range or unavailable",
+        "Index is currently not available",
+        "Index is not implemented on this camera",
+        "String value exceed maximum allowed length",
+        "Connection or Disconnection error",
+        "No Internal Event or Internal Error",
+        "Invalid handle",
+        "Waiting for buffer timed out",
+        "Input buffer queue reached maximum capacity",
+        "Queued buffer / returned frame size conflict",
+        "A queued buffer was not aligned on an 8-byte boundary",
+        "An error has occurred while communicating with hardware",
+        "Index / String is not currently available",
+        "Index / String is not implemented on this camera",
+        "Passed feature = NULL",
+        "Passed handle = NULL",
+        "Feature not implemented",
+        "Readable not set",
+        "Readonly not set",
+        "Writable not set",
+        "Min value = NULL",
+        "Max value = NULL",
+        "Function returned NULL value",
+        "Function returned NULL string",
+        "Feature index count = NULL",
+        "Available not set",
+        "Passed string lenght = NULL",
+        "EvCallBack parameter = NULL",
+        "Pointer to queue = NULL",
+        "Wait pointer = NULL",
+        "Pointer size = NULL",
+        "No memory allocated for current action",
+        "Unable to connect, device already in use",
+        "Device not found",
+        /* this is error number 40 but we pretend it's 100, so substract 60 */
+        "The software was not able to retrieve data from the card or camera fast enough to avoid the internal hardware buffer bursting",
         /* atutility.h errors */
-        case 1002:
-            string = "Invalid output pixel encoding";
-            break;
-        case 1003:
-            string = "Invalid input pixel encoding";
-            break;
-        case 1004:
-            string = "Input buffer does not include metadata";
-            break;
-        case 1005:
-            string = "Corrupted metadata";
-            break;
-        case 1006:
-            string = "Metadata not found";
-            break;
-        default :
-            string = "Unknown error...";
-            break;
-    }
-    return string;
+        /* this is error number 41 but we pretend it's 1002, so substract 961 */
+        "Invalid output pixel encoding",
+        "Invalid input pixel encoding",
+        "Input buffer does not include metadata",
+        "Corrupted metadata",
+        "Metadata not found",
+    };
+
+    if (error <= 39)
+        return errors[error];
+
+    if (error == 100)
+        return errors[error - 60];
+
+    if (error >= 1002 && error <= 1006)
+        return errors[error - 961];
+
+    return "Unknown error...";
 }
 
 static gboolean
