@@ -687,37 +687,33 @@ write_boolean (UcaAndorCameraPrivate *priv, const AT_WC* property, gboolean valu
     return TRUE;
 }
 
-static gint64
-extract_uint_from_string (gchar* string)
 /**
- * Function used for extracting bitdeph value (uint) from andor's returned string
- *    -> assume that the string contain an unique number of 1 or 2 numeral(s) (nothing else!)
+ * Function used for extracting bitdeph value (uint) from andor's returned
+ * string assume that the string contain an unique number of 1 or 2 numeral(s)
+ * (nothing else!)
  */
+static gint64
+extract_uint_from_string (const gchar* string)
 {
-    gint64 num;
-    gchar extract[2];
-    long unsigned int i=0;
-    while (i < (strlen(string))) {
-        if (string[i]=='0' || string[i]=='1' || string[i]=='2' || string[i]=='3' || string[i]=='4' || string[i]=='5' || string[i]=='6' ||
-            string[i]=='7' || string[i]=='8' || string[i]=='9') {         /* buldozzer method to check if character is a numeral... */
+    GRegex *regex;
+    GMatchInfo *info;
+    gint64 result = 0;
 
-            if (string[i+1]=='0' || string[i+1]=='1' || string[i+1]=='2' || string[i+1]=='3' || string[i+1]=='4' || string[i+1]=='5' || string[i+1]=='6' ||
-                    string[i+1]=='7' || string[i+1]=='8' || string[i+1]=='9') {
-                extract[0]=string[i];
-                extract[1]=string[i+1];
-            }
-            else {
-                extract[1]='\0';
-                extract[0]=string[i];
-            }
+    regex = g_regex_new ("(\\d{1,2})", 0, 0, NULL);
 
-            num = atoi (extract);
-            return num;
-        }
-        i++;
+    if (g_regex_match (regex, string, 0, &info)) {
+        gchar *word = g_match_info_fetch (info, 0);
+        result = atoi (word);
+        g_free (word);
+        g_match_info_free (info);
+        goto extract_uint_from_string_cleanup;
     }
+
     g_warning ("Could not extract BitDepth uint from returned string '%s', returned value: 0 by default", string);
-    return 0;
+
+extract_uint_from_string_cleanup:
+    g_regex_unref (regex);
+    return result;
 }
 
 static void
