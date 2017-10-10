@@ -1775,14 +1775,14 @@ uca_andor_camera_class_init (UcaAndorCameraClass *klass)
                 G_PARAM_READABLE);
 
     andor_properties [PROP_SIMPLE_PRE_AMP_GAIN_CONTROL] =
-        g_param_spec_enum ("Simple-pre-amp-gain-control",
+        g_param_spec_enum ("simple-pre-amp-gain-control",
                 "Simple pre amp gain control",
                 "Wrapped feature to handle pixel encoding and bit depth",
                 UCA_TYPE_ANDOR_CAMERA_SPAGC, UCA_ANDOR_CAMERA_SPAGC_11BIT_LOW_NOISE,
                 G_PARAM_READWRITE);
 
     andor_properties [PROP_SHUTTERING_MODE] =
-        g_param_spec_enum ("Electronic-shutter-mode",
+        g_param_spec_enum ("electronic-shutter-mode",
                 "Electronic shutter mode",
                 "The current electronic shutter mode",
                 UCA_TYPE_ANDOR_CAMERA_SHUTTERING_MODE, UCA_ANDOR_CAMERA_SHUTTERING_MODE_ROLLING,
