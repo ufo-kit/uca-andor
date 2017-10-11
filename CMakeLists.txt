@@ -38,7 +38,6 @@ glib2_mkenums(uca-andor-enums
 	uca-andor-enums
 	uca-andor-camera.h)
 
-
 link_directories(
     ${UCA_LIBRARY_DIRS}
     ${ANDOR_LIBRARY_DIRS})
@@ -55,5 +54,3 @@ target_link_libraries(ucaandor
 install(TARGETS ucaandor
         LIBRARY DESTINATION ${LIBUCA_PLUGINDIR}
         RUNTIME DESTINATION ${LIBUCA_PLUGINDIR})
-
-
