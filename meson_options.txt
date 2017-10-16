@@ -1,0 +1,1 @@
+option('libatdir', type: 'string')
