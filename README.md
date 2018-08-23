@@ -26,6 +26,19 @@ The plugin has been tested with the Neo-2-6-6089-CLB framegrabber, the Andor SDK
 * Ubuntu 16.04 LTS (Linux 4.4.0): does work.
 
 
+### Quick start
+
+Here's the most conscise way to get to a running system:
+
+1. Untar `andor-linux-sdk3-x.xx.xxxxx.x.tgz`
+2. Build `andor/bitflow/drv` with the install script (see https://www.kernel.org/doc/Documentation/kbuild/modules.txt)
+3. Install module with `make -C /lib/modules/$(uname -r)/build M=$PWD modules_install`
+4. Run `depmod -a`
+5. Clone https://github.com/ufo-kit/libuca and https://github.com/ufo-kit/uca-andor
+6. Copy `uca-andor/etc/Makefile` to the root of `andor/` and run `LIBDIR=lib64 make install`
+7. Build libuca and the uca-andor plugin
+
+
 ### Preparation of the Linux environment
 
 To install the older 4.4.0 kernel version on an Ubuntu 16.04:
@@ -56,10 +69,10 @@ be placed on the top of the list. To remove the kernel run:
    for it with the following message:
 
         Platform cannot be automatically determined. Please select platform to install:
-		1. 32-bit
-		2. 64-bit
-		3. Exit
-		Selection:
+        1. 32-bit
+        2. 64-bit
+        3. Exit
+        Selection:
 
    to any other question, always answer yes (type `y`)
 3. To make sure that the installation is successful, you can check that a new
@@ -105,19 +118,19 @@ be placed on the top of the list. To remove the kernel run:
       $ lsmod
       Module                  Size  Used by
       ...                      ...  ...
-	  bitflow               163301  0
-	  v4l2_common            12995  0
+      bitflow               163301  0
+      v4l2_common            12995  0
       videodev              126451  2 v4l2_common,bitflow
-	  ...                      ...  ...
+      ...                      ...  ...
 
 
 When running `listdevices` you should see
 
     Found 3 Devices.
-	Device 0 : DC-152Q-C00-FI
-	Device 1 : SIMCAM CMOS
-	Device 2 : SIMCAM CMOS
-	Press any key and enter to exit."
+    Device 0 : DC-152Q-C00-FI
+    Device 1 : SIMCAM CMOS
+    Device 2 : SIMCAM CMOS
+    Press any key and enter to exit."
 
 The `image` example program should allow you to capture a clear image (with the
 correct lens obviously).
